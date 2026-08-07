@@ -66,14 +66,20 @@ export class SqliteSemanticModelStorage implements SemanticModelStorage {
   private writeModel(db: Database, model: SemanticModel): void {
     const insertSymbol = db.prepare(`
       INSERT INTO symbols (
-        id, kind, name, name_lower, qualified_name, qualified_name_lower, file_path,
+        id, kind, name, name_lower, qualified_name, qualified_name_lower,
+        file_path, file_path_lower,
         start_line, start_col, end_line, end_col, exported, visibility, metadata, is_project
       ) VALUES (
-        @id, @kind, @name, @name_lower, @qualified_name, @qualified_name_lower, @file_path,
+        @id, @kind, @name, @name_lower, @qualified_name, @qualified_name_lower,
+        @file_path, @file_path_lower,
         @start_line, @start_col, @end_line, @end_col, @exported, @visibility, @metadata, @is_project
       )
       ON CONFLICT(id) DO NOTHING
     `);
+
+    // External-content FTS: 'rebuild' reads straight from `symbols`, so this runs
+    // after the insert loop and builds the whole trigram index in one pass.
+    const buildFts = db.prepare(`INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild')`);
 
     const insertScope = db.prepare(`
       INSERT INTO scopes (
@@ -137,6 +143,7 @@ export class SqliteSemanticModelStorage implements SemanticModelStorage {
     // difference between ~100k inserts/sec and a few hundred.
     const write = db.transaction((m: SemanticModel) => {
       db.exec(`
+        INSERT INTO symbols_fts(symbols_fts) VALUES('delete-all');
         DELETE FROM symbols;
         DELETE FROM scopes;
         DELETE FROM containments;
@@ -166,6 +173,8 @@ export class SqliteSemanticModelStorage implements SemanticModelStorage {
       for (const diagnostic of m.diagnostics) {
         insertDiagnostic.run(diagnosticToRow(diagnostic));
       }
+
+      buildFts.run();
 
       // Distinct source files, so `SELECT * FROM files` is useful immediately and
       // Phase 3 has a row to hang content hashes off. The project symbol has an

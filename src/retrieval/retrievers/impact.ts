@@ -25,7 +25,7 @@ export class ImpactRetriever extends BaseRetriever {
 
       for (const nodeId of queue) {
         // Look up incoming dependencies using reverse index
-        const incoming = this.indexes.reverseDependencies.get(nodeId) || [];
+        const incoming = this.indexes.getIncomingEdges(nodeId);
 
         for (const edge of incoming) {
           if (resultNodes.length >= maxNodes) break;

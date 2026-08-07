@@ -1,4 +1,4 @@
-import { KnowledgeGraph } from '../graph/graph.js';
+import { ReadableGraph } from '../graph/graph.js';
 import { executeRegion } from './operations/region.js';
 import { executePath } from './operations/path.js';
 import { executeImpact } from './operations/impact.js';
@@ -6,9 +6,9 @@ import { GraphQueryPlan } from '../mcp/types.js';
 import { ExecutionResult } from './result-types.js';
 
 export class GraphExecutor {
-  private graph: KnowledgeGraph;
+  private graph: ReadableGraph;
 
-  constructor(graph: KnowledgeGraph) {
+  constructor(graph: ReadableGraph) {
     this.graph = graph;
   }
 

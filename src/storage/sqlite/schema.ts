@@ -6,7 +6,31 @@ import type { Database } from 'better-sqlite3';
  * derived cache of the source tree, never user data, so a rebuild is always
  * cheaper and safer than a migration path we'd have to keep correct forever.
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 3;
+
+/**
+ * Substring matching (CandidateDiscovery's "name contains token") has no usable
+ * B-tree index — `LIKE '%tok%'` degrades to a full scan. FTS5's trigram tokenizer
+ * is built for exactly this and is the reason discovery can stop walking in-memory
+ * Maps.
+ *
+ * Measured on a synthetic 400k-symbol corpus with selective tokens:
+ *   JS Map scan (the old path)   190.60 ms
+ *   LIKE on the base table       316.26 ms
+ *   trigram MATCH                  2.34 ms
+ *
+ * Caveat: trigram indexes only substrings of 3+ characters. Shorter tokens must
+ * fall back to a base-table LIKE — see MIN_TRIGRAM_LENGTH.
+ *
+ * Note the index is *external content* (`content='symbols'`). An earlier version
+ * stored its own copy keyed by the TEXT symbol id, which made every hit a
+ * string-keyed lookup back into `symbols` — and that join, not the matching,
+ * dominated. Measured at 100k symbols on a token matching 12% of the corpus:
+ *   own content, join on TEXT id    150.40 ms   (13.64 MB index)
+ *   external content, join on rowid  79.53 ms   ( 5.11 MB index)
+ * Selective tokens are ~1 ms either way, so external content is strictly better.
+ */
+export const MIN_TRIGRAM_LENGTH = 3;
 
 /**
  * WAL lets the visualizer/MCP read while the watcher writes a rebuild.
@@ -51,6 +75,7 @@ const DDL = `
     qualified_name       TEXT NOT NULL,
     qualified_name_lower TEXT NOT NULL,
     file_path            TEXT NOT NULL,
+    file_path_lower      TEXT NOT NULL,
     start_line           INTEGER NOT NULL,
     start_col            INTEGER NOT NULL,
     end_line             INTEGER NOT NULL,
@@ -59,6 +84,21 @@ const DDL = `
     visibility           TEXT NOT NULL,
     metadata             TEXT NOT NULL,
     is_project           INTEGER NOT NULL DEFAULT 0
+  );
+
+  /*
+   * Trigram index over the three fields discovery matches substrings against.
+   * External content: the rows live in the symbols table and are joined back on
+   * integer rowid, so nothing is duplicated and the join is an integer-PK seek.
+   * Column names must match symbols for the 'rebuild' command to populate it.
+   */
+  CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+    name_lower,
+    qualified_name_lower,
+    file_path_lower,
+    content='symbols',
+    content_rowid='rowid',
+    tokenize='trigram'
   );
 
   CREATE TABLE IF NOT EXISTS scopes (
@@ -133,6 +173,7 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_symbols_name_lower  ON symbols(name_lower);
   CREATE INDEX IF NOT EXISTS idx_symbols_qname_lower ON symbols(qualified_name_lower);
   CREATE INDEX IF NOT EXISTS idx_symbols_file        ON symbols(file_path);
+  CREATE INDEX IF NOT EXISTS idx_symbols_file_lower  ON symbols(file_path_lower);
   CREATE INDEX IF NOT EXISTS idx_symbols_kind        ON symbols(kind);
 
   CREATE INDEX IF NOT EXISTS idx_scopes_file         ON scopes(file_path);
@@ -155,6 +196,7 @@ const INDEXES = `
 const ALL_TABLES = [
   'meta',
   'files',
+  'symbols_fts',
   'symbols',
   'scopes',
   'containments',

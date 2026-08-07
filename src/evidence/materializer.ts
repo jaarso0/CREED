@@ -1,16 +1,16 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { KnowledgeGraph, KGNode } from '../graph/graph.js';
+import { ReadableGraph, KGNode } from '../graph/graph.js';
 import { RegionResult, PathResult, ImpactResult, StructuralNode } from '../executor/result-types.js';
 import { MaterializedEvidence, MaterializedNode, MaterializedEdge } from './types.js';
 import { GraphQueryPlan } from '../mcp/types.js';
 
 export class EvidenceMaterializer {
   private projectRoot: string;
-  private graph: KnowledgeGraph;
+  private graph: ReadableGraph;
   private fileCache = new Map<string, string[]>(); // filePath -> lines array
 
-  constructor(graph: KnowledgeGraph, projectRoot: string) {
+  constructor(graph: ReadableGraph, projectRoot: string) {
     this.graph = graph;
     this.projectRoot = projectRoot;
   }

@@ -1,5 +1,5 @@
 import * as readline from 'readline';
-import { KnowledgeGraph } from '../graph/graph.js';
+import { ReadableGraph } from '../graph/graph.js';
 import { GraphQueryPlan } from './types.js';
 import { validateGraphQueryPlan } from './schemas.js';
 import {
@@ -10,21 +10,31 @@ import {
   compileExploreFlow
 } from './compile.js';
 import { RequestController } from './controller.js';
+import { SymbolIndex } from '../retrieval/symbol-index.js';
 
 export class MCPServer {
-  private graph: KnowledgeGraph;
+  private graph: ReadableGraph;
   private projectRoot: string;
   private controller: RequestController;
+  private index: SymbolIndex | undefined;
 
-  constructor(graph: KnowledgeGraph, projectRoot: string) {
+  constructor(graph: ReadableGraph, projectRoot: string, index?: SymbolIndex) {
     this.graph = graph;
     this.projectRoot = projectRoot;
-    this.controller = new RequestController(graph, projectRoot);
+    this.index = index;
+    this.controller = new RequestController(graph, projectRoot, index);
   }
 
-  public updateGraph(graph: KnowledgeGraph): void {
+  /**
+   * Swaps in a freshly rebuilt graph. `index` is optional so the SQLite backend can
+   * hand over a refreshed symbol index alongside the graph; omitting it keeps the
+   * previous one, which is correct for the in-memory backend where the index is
+   * derived from the graph itself.
+   */
+  public updateGraph(graph: ReadableGraph, index?: SymbolIndex): void {
     this.graph = graph;
-    this.controller = new RequestController(graph, this.projectRoot);
+    if (index) this.index = index;
+    this.controller = new RequestController(graph, this.projectRoot, this.index);
   }
 
   public start(): void {

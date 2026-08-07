@@ -76,6 +76,7 @@ export interface SymbolRow extends RangeCols {
   qualified_name: string;
   qualified_name_lower: string;
   file_path: string;
+  file_path_lower: string;
   exported: number;
   visibility: string;
   metadata: string;
@@ -91,6 +92,7 @@ export function symbolToRow(symbol: KGSymbol, isProject = false): SymbolRow {
     qualified_name: symbol.qualifiedName,
     qualified_name_lower: symbol.qualifiedName.toLowerCase(),
     file_path: symbol.filePath,
+    file_path_lower: symbol.filePath.toLowerCase(),
     ...rangeToCols(symbol.range),
     exported: symbol.exported ? 1 : 0,
     visibility: symbol.visibility,

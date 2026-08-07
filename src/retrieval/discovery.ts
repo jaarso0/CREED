@@ -1,4 +1,4 @@
-import { RetrievalIndexes } from './indexes.js';
+import { SymbolIndex } from './symbol-index.js';
 import { CandidateResult } from './types.js';
 import { KGNode } from '../graph/graph.js';
 
@@ -15,7 +15,7 @@ export const DEFINITION_KINDS = new Set([
 ]);
 
 export class CandidateDiscovery {
-  private indexes: RetrievalIndexes;
+  private indexes: SymbolIndex;
   // Common English + generic programming words that are noise as query terms — filtered out
   // so "how does the auth service class work" anchors on "auth"/"service", not "class"/"work".
   private stopWords = new Set([
@@ -36,7 +36,7 @@ export class CandidateDiscovery {
     return /[.\-_](test|spec)[.\-_]/.test(base) || /^(test|spec)[.\-_]/.test(base) || /[.\-_](test|spec)\.[a-z0-9]+$/.test(base);
   }
 
-  constructor(indexes: RetrievalIndexes) {
+  constructor(indexes: SymbolIndex) {
     this.indexes = indexes;
   }
 
@@ -54,44 +54,37 @@ export class CandidateDiscovery {
       const method = routeMatch[1].toUpperCase();
       const path = routeMatch[2];
       const endpointKey = `${method} ${path}`;
-      const node = this.indexes.byEndpoint.get(endpointKey);
+      const node = this.indexes.getEndpoint(endpointKey);
       if (node) {
         this.addOrScore(candidates, node, 15, `Exact Endpoint Match: ${endpointKey}`);
       }
     }
 
-    // Heuristic 2: Search by token matches in names, qualified names, and paths
+    // Heuristic 2: Search by token matches in names, qualified names, and paths.
+    // These were four full scans over in-memory Maps per token; they are now index
+    // lookups (FTS5 trigram for the substring cases). The point values, reason
+    // strings and ordering are unchanged — only how the matches are found differs.
     for (const token of tokens) {
       const tokLower = token.toLowerCase();
 
-      const serviceNode = this.indexes.byService.get(token);
+      const serviceNode = this.indexes.getService(token);
       if (serviceNode) {
         this.addOrScore(candidates, serviceNode, 10, `Exact Service Name Match: ${token}`, tokLower);
       }
 
-      for (const [name, nodes] of this.indexes.bySymbolName.entries()) {
-        if (name === tokLower) {
-          for (const n of nodes) this.addOrScore(candidates, n, 8, `Exact Symbol Name Match: ${n.name}`, tokLower);
-        } else if (name.includes(tokLower)) {
-          for (const n of nodes) this.addOrScore(candidates, n, 4, `Substring Symbol Name Match: ${n.name}`, tokLower);
-        }
+      for (const { node: n, exact } of this.indexes.matchByName(tokLower)) {
+        if (exact) this.addOrScore(candidates, n, 8, `Exact Symbol Name Match: ${n.name}`, tokLower);
+        else this.addOrScore(candidates, n, 4, `Substring Symbol Name Match: ${n.name}`, tokLower);
       }
 
-      for (const [qname, nodes] of this.indexes.byQualifiedName.entries()) {
-        if (qname === tokLower) {
-          for (const n of nodes) this.addOrScore(candidates, n, 6, `Exact Qualified Name Match: ${n.qualifiedName}`, tokLower);
-        } else if (qname.includes(tokLower)) {
-          for (const n of nodes) this.addOrScore(candidates, n, 3, `Substring Qualified Name Match: ${n.qualifiedName}`, tokLower);
-        }
+      for (const { node: n, exact } of this.indexes.matchByQualifiedName(tokLower)) {
+        if (exact) this.addOrScore(candidates, n, 6, `Exact Qualified Name Match: ${n.qualifiedName}`, tokLower);
+        else this.addOrScore(candidates, n, 3, `Substring Qualified Name Match: ${n.qualifiedName}`, tokLower);
       }
 
-      for (const [filePath, nodes] of this.indexes.byFile.entries()) {
-        if (filePath.toLowerCase().includes(tokLower)) {
-          for (const n of nodes) {
-            const mult = (n.kind === 'class' || n.kind === 'function') ? 5 : 2;
-            this.addOrScore(candidates, n, mult, `File Path Match: ${filePath}`, tokLower);
-          }
-        }
+      for (const { node: n, filePath } of this.indexes.matchByFilePath(tokLower)) {
+        const mult = (n.kind === 'class' || n.kind === 'function') ? 5 : 2;
+        this.addOrScore(candidates, n, mult, `File Path Match: ${filePath}`, tokLower);
       }
     }
 

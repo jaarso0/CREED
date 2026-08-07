@@ -119,16 +119,33 @@ async function runCLI() {
       console.error(`Building semantic model for ${targetDir} on startup...`);
       const model = await pipeline.buildFull(targetDir);
       await storage.save(model, targetDir);
-      const graph = pipeline.deriveGraph(model);
+
+      // Serve the graph out of SQLite rather than the in-memory model. The model
+      // object built above is released once this scope exits; from here on, node and
+      // edge lookups are indexed reads against .masai/graph.db, so resident memory
+      // tracks what queries touch instead of the size of the repository.
+      const { SqliteKnowledgeGraph } = await import('./graph/sqlite-graph.js');
+      const { SqliteSymbolIndex } = await import('./retrieval/sqlite-symbol-index.js');
+      const graph = new SqliteKnowledgeGraph(targetDir);
+      const index = new SqliteSymbolIndex(targetDir);
+
       const { MCPServer } = await import('./mcp/server.js');
-      const mcpServer = new MCPServer(graph, targetDir);
+      const mcpServer = new MCPServer(graph, targetDir, index);
       mcpServer.start();
 
       const { watchAndRebuild } = await import('./watcher.js');
-      const watcher = watchAndRebuild(targetDir, (newGraph) => {
-        mcpServer.updateGraph(newGraph);
+      const watcher = watchAndRebuild(targetDir, () => {
+        // The rebuild has already written the new index to the same database file.
+        // Re-point the existing readers at it instead of constructing a new graph.
+        graph.refresh();
+        index.refresh();
+        mcpServer.updateGraph(graph, index);
       });
-      process.on('exit', () => watcher.close());
+      process.on('exit', () => {
+        watcher.close();
+        graph.close();
+        index.close();
+      });
     } catch (err: any) {
       console.error(`\n❌ Error starting MCP server:`, err.message || err);
       process.exit(1);

@@ -1,10 +1,10 @@
-import { KnowledgeGraph, KGNode, KGEdge, KGEdgeKind } from '../graph/graph.js';
+import { ReadableGraph, KGNode, KGEdge, KGEdgeKind } from '../graph/graph.js';
 import { ExpansionConfig } from './types.js';
 
 export class GraphExpander {
-  private graph: KnowledgeGraph;
+  private graph: ReadableGraph;
 
-  constructor(graph: KnowledgeGraph) {
+  constructor(graph: ReadableGraph) {
     this.graph = graph;
   }
 

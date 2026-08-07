@@ -1,7 +1,15 @@
-import { KnowledgeGraph, KGNode, KGEdge } from '../graph/graph.js';
+import { ReadableGraph, KGNode, KGEdge } from '../graph/graph.js';
 import { Symbol } from '../semantic-model/types.js';
+import { SymbolIndex, SymbolMatch, FilePathMatch } from './symbol-index.js';
 
-export class RetrievalIndexes {
+/**
+ * In-memory `SymbolIndex`: every node is held in these Maps, so each substring
+ * lookup scans them. Correct and fast for small projects, but its footprint grows
+ * with the codebase — see `SqliteSymbolIndex` for the backend that removes that
+ * ceiling. Retained as the default for callers that already hold a full graph
+ * (tests, the CLI, anything constructing a graph in memory).
+ */
+export class RetrievalIndexes implements SymbolIndex {
   public bySymbolName = new Map<string, KGNode[]>();
   public byQualifiedName = new Map<string, KGNode[]>();
   public byFile = new Map<string, KGNode[]>();
@@ -12,11 +20,69 @@ export class RetrievalIndexes {
   public reverseCallers = new Map<string, KGEdge[]>();     // targetId -> incoming calls
   public reverseDependencies = new Map<string, KGEdge[]>(); // targetId -> incoming relations of any kind
 
-  constructor(graph: KnowledgeGraph) {
+  constructor(graph: ReadableGraph) {
     this.build(graph);
   }
 
-  public build(graph: KnowledgeGraph): void {
+  // ── SymbolIndex ───────────────────────────────────────────────────────────
+
+  public getByName(nameLower: string): KGNode[] {
+    return this.bySymbolName.get(nameLower) || [];
+  }
+
+  public getByQualifiedName(qnameLower: string): KGNode[] {
+    return this.byQualifiedName.get(qnameLower) || [];
+  }
+
+  public matchByName(token: string): SymbolMatch[] {
+    const out: SymbolMatch[] = [];
+    for (const [name, nodes] of this.bySymbolName.entries()) {
+      if (name === token) {
+        for (const n of nodes) out.push({ node: n, exact: true });
+      } else if (name.includes(token)) {
+        for (const n of nodes) out.push({ node: n, exact: false });
+      }
+    }
+    return out;
+  }
+
+  public matchByQualifiedName(token: string): SymbolMatch[] {
+    const out: SymbolMatch[] = [];
+    for (const [qname, nodes] of this.byQualifiedName.entries()) {
+      if (qname === token) {
+        for (const n of nodes) out.push({ node: n, exact: true });
+      } else if (qname.includes(token)) {
+        for (const n of nodes) out.push({ node: n, exact: false });
+      }
+    }
+    return out;
+  }
+
+  public matchByFilePath(token: string): FilePathMatch[] {
+    const out: FilePathMatch[] = [];
+    for (const [filePath, nodes] of this.byFile.entries()) {
+      if (filePath.toLowerCase().includes(token)) {
+        for (const n of nodes) out.push({ node: n, filePath });
+      }
+    }
+    return out;
+  }
+
+  public getEndpoint(endpointKey: string): KGNode | undefined {
+    return this.byEndpoint.get(endpointKey);
+  }
+
+  public getService(name: string): KGNode | undefined {
+    return this.byService.get(name);
+  }
+
+  public getIncomingEdges(nodeId: string): KGEdge[] {
+    return this.reverseDependencies.get(nodeId) || [];
+  }
+
+  // ── construction ──────────────────────────────────────────────────────────
+
+  public build(graph: ReadableGraph): void {
     this.clear();
     const nodes = graph.getAllNodes();
 

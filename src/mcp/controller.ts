@@ -1,4 +1,5 @@
-import { KnowledgeGraph } from '../graph/graph.js';
+import { ReadableGraph } from '../graph/graph.js';
+import { SymbolIndex } from '../retrieval/symbol-index.js';
 import { GraphQueryPlan } from './types.js';
 import { AnchorResolver } from '../resolution/anchor-resolver.js';
 import { GraphExecutor } from '../executor/graph-executor.js';
@@ -42,17 +43,22 @@ export const DEFAULT_POLICY: RequestPolicy = {
 };
 
 export class RequestController {
-  private graph: KnowledgeGraph;
+  private graph: ReadableGraph;
   private projectRoot: string;
   private resolver: AnchorResolver;
   private executor: GraphExecutor;
   private materializer: EvidenceMaterializer;
   private optimizer: QueryContextOptimizer;
 
-  constructor(graph: KnowledgeGraph, projectRoot: string) {
+  /**
+   * `index` threads a SQLite-backed symbol index through to the anchor resolver.
+   * Without it the resolver builds an in-memory index, materializing every node
+   * into Maps — which would defeat the point of a SQLite-backed graph.
+   */
+  constructor(graph: ReadableGraph, projectRoot: string, index?: SymbolIndex) {
     this.graph = graph;
     this.projectRoot = projectRoot;
-    this.resolver = new AnchorResolver(graph);
+    this.resolver = new AnchorResolver(graph, index);
     this.executor = new GraphExecutor(graph);
     this.materializer = new EvidenceMaterializer(graph, projectRoot);
 

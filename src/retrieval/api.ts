@@ -1,6 +1,7 @@
-import { KnowledgeGraph, KGNode } from '../graph/graph.js';
+import { ReadableGraph, KGNode } from '../graph/graph.js';
 import { Symbol } from '../semantic-model/types.js';
 import { RetrievalIndexes } from './indexes.js';
+import { SymbolIndex } from './symbol-index.js';
 import { CandidateDiscovery } from './discovery.js';
 import { RetrievalPlanner } from './planner.js';
 import { ContextBuilder } from './context-builder.js';
@@ -10,17 +11,22 @@ import { ImpactRetriever } from './retrievers/impact.js';
 import { ContextPackage, RetrievalStrategy } from './types.js';
 
 export class RetrievalEngine {
-  private graph: KnowledgeGraph;
-  private indexes: RetrievalIndexes;
+  private graph: ReadableGraph;
+  private indexes: SymbolIndex;
   private discovery: CandidateDiscovery;
   private planner: RetrievalPlanner;
   private builder: ContextBuilder;
   private projectRoot: string;
 
-  constructor(graph: KnowledgeGraph, projectRoot: string) {
+  /**
+   * Pass `index` (e.g. a `SqliteSymbolIndex`) to look symbols up through the
+   * database. Omitting it builds the in-memory index, which requires the whole
+   * graph to be resident.
+   */
+  constructor(graph: ReadableGraph, projectRoot: string, index?: SymbolIndex) {
     this.graph = graph;
     this.projectRoot = projectRoot;
-    this.indexes = new RetrievalIndexes(graph);
+    this.indexes = index ?? new RetrievalIndexes(graph);
     this.discovery = new CandidateDiscovery(this.indexes);
     this.planner = new RetrievalPlanner();
     this.builder = new ContextBuilder(projectRoot);
@@ -69,15 +75,37 @@ export class RetrievalEngine {
 
   /**
    * Incremental updates to index when pipeline processes a single file change.
+   * In-memory index only — with a SQLite-backed index the source of truth is the
+   * database, which a pipeline rebuild rewrites wholesale.
    */
   public updateFile(filePath: string, newSymbols: Symbol[], allResolvedReferences: any[], isDeletion: boolean = false): void {
-    this.indexes.updateFile(filePath, newSymbols, allResolvedReferences, isDeletion);
+    this.requireInMemoryIndexes('updateFile').updateFile(
+      filePath,
+      newSymbols,
+      allResolvedReferences,
+      isDeletion
+    );
   }
 
   /**
    * Expose internal components for advanced customization / inspectability.
    */
   public getIndexes(): RetrievalIndexes {
+    return this.requireInMemoryIndexes('getIndexes');
+  }
+
+  /** The generic lookup surface, valid for either backend. */
+  public getSymbolIndex(): SymbolIndex {
+    return this.indexes;
+  }
+
+  private requireInMemoryIndexes(method: string): RetrievalIndexes {
+    if (!(this.indexes instanceof RetrievalIndexes)) {
+      throw new Error(
+        `${method}() exposes the in-memory index Maps, but this engine was constructed ` +
+        `with an injected SymbolIndex (e.g. SQLite-backed). Use getSymbolIndex() instead.`
+      );
+    }
     return this.indexes;
   }
 

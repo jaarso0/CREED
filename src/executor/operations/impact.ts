@@ -1,8 +1,8 @@
-import { KnowledgeGraph, KGEdge, KGNode } from '../../graph/graph.js';
+import { ReadableGraph, KGEdge, KGNode } from '../../graph/graph.js';
 import { ImpactResult, StructuralEdge } from '../result-types.js';
 
 export function executeImpact(
-  graph: KnowledgeGraph,
+  graph: ReadableGraph,
   options: {
     anchor: string;
     maxDepth: number;

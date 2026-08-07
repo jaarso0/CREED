@@ -27,7 +27,41 @@ export interface KGEdge {
   resolutionMethod?: ResolutionMethod;  // only for reference edges
 }
 
-export class KnowledgeGraph {
+/**
+ * The read surface every consumer actually uses — executor operations, retrievers,
+ * the evidence materializer, the anchor resolver, the MCP controller.
+ *
+ * Extracted so a SQLite-backed graph (`SqliteKnowledgeGraph`) can be substituted for
+ * the in-memory one without touching those call sites: they depend on this interface,
+ * not on the Map-based implementation. Write methods (`addNode`, `addEdge`,
+ * `markTestCovered`) stay off it — only `buildGraphFromModel` needs them.
+ */
+export interface ReadableGraph {
+  getNode(id: string): KGNode | undefined;
+  /**
+   * Materializes every node. Unbounded by nature — fine for the visualizer and
+   * stats, but avoid it on query paths; that is exactly the pattern the SQLite
+   * backend exists to remove.
+   */
+  getAllNodes(): KGNode[];
+  getEdgesFrom(id: string, kind?: KGEdgeKind): KGEdge[];
+  getEdgesTo(id: string, kind?: KGEdgeKind): KGEdge[];
+  getCallersOf(symbolId: string): KGNode[];
+  getCalleesOf(symbolId: string): KGNode[];
+  getMembersOf(classId: string): KGNode[];
+  getInheritanceChain(classId: string): KGNode[];
+  getImportsOf(fileOrSymbolId: string): KGNode[];
+  findByName(name: string): KGNode[];
+  findByQualifiedName(qname: string): KGNode[];
+  /** Returns a bounded in-memory subgraph — safe to materialize regardless of backend. */
+  getNeighborhood(symbolId: string, depth: number): KnowledgeGraph;
+  getUnresolvedReferences(symbolId: string): { rawName: string; kind: string }[];
+  isTestCovered(symbolId: string): boolean;
+  stats(): { nodes: number; edges: number; byKind: Record<string, number> };
+  getBuiltAt(): string | undefined;
+}
+
+export class KnowledgeGraph implements ReadableGraph {
   private nodes = new Map<string, KGNode>();
   private edgesFrom = new Map<string, KGEdge[]>();
   private edgesTo = new Map<string, KGEdge[]>();
@@ -290,7 +324,14 @@ export function buildGraphFromModel(model: SemanticModel): KnowledgeGraph {
   return graph;
 }
 
-function isTestFile(filePath: string): boolean {
+/**
+ * Exported so alternative graph backends classify test files with this exact
+ * predicate rather than an approximation of it. An earlier SQLite implementation
+ * expressed these rules as SQL `LIKE` patterns and silently diverged — `tests/x.ts`
+ * matched there but not here, and `%.test.%` matched mid-path rather than only as a
+ * suffix. Sharing the function makes that class of drift impossible.
+ */
+export function isTestFile(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/').toLowerCase();
   return (
     /\/tests?\//.test(normalized) ||

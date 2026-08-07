@@ -1,8 +1,8 @@
-import { KnowledgeGraph, KGNode, KGEdge } from '../../graph/graph.js';
+import { ReadableGraph, KGNode, KGEdge } from '../../graph/graph.js';
 import { RegionResult, StructuralNode, StructuralEdge } from '../result-types.js';
 
 export function executeRegion(
-  graph: KnowledgeGraph,
+  graph: ReadableGraph,
   options: {
     anchors: string[];
     direction: 'incoming' | 'outgoing' | 'both';

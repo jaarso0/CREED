@@ -1,6 +1,7 @@
-import { KnowledgeGraph, KGNode } from '../graph/graph.js';
+import { ReadableGraph, KGNode } from '../graph/graph.js';
 import { CandidateDiscovery, DEFINITION_KINDS } from '../retrieval/discovery.js';
 import { RetrievalIndexes } from '../retrieval/indexes.js';
+import { SymbolIndex } from '../retrieval/symbol-index.js';
 import { AnchorSpec } from '../mcp/types.js';
 import { ResolvedAnchor, AnchorCandidate, ResolutionResult, MultiAnchorResolutionResult, Disambiguation } from './types.js';
 
@@ -11,13 +12,19 @@ function isPeripheralFile(filePath: string): boolean {
 }
 
 export class AnchorResolver {
-  private graph: KnowledgeGraph;
-  private indexes: RetrievalIndexes;
+  private graph: ReadableGraph;
+  private indexes: SymbolIndex;
   private discovery: CandidateDiscovery;
 
-  constructor(graph: KnowledgeGraph) {
+  /**
+   * `index` lets a caller supply a SQLite-backed lookup instead of building the
+   * in-memory one, which otherwise materializes every node into Maps just to
+   * resolve an anchor. Defaults to the in-memory index for callers that already
+   * hold a full graph.
+   */
+  constructor(graph: ReadableGraph, index?: SymbolIndex) {
     this.graph = graph;
-    this.indexes = new RetrievalIndexes(graph);
+    this.indexes = index ?? new RetrievalIndexes(graph);
     this.discovery = new CandidateDiscovery(this.indexes);
   }
 
@@ -48,7 +55,7 @@ export class AnchorResolver {
       const lowerQuery = query.toLowerCase();
       // Indexed O(1) lookup (byQualifiedName is keyed by lowercased qualified name)
       // instead of an O(n) scan over every node in the graph on every resolve.
-      let qnameMatches = this.indexes.byQualifiedName.get(lowerQuery) || [];
+      let qnameMatches = this.indexes.getByQualifiedName(lowerQuery);
       if (kindFilter) qnameMatches = qnameMatches.filter(n => n.kind === kindFilter);
 
       if (qnameMatches.length === 1) {
@@ -71,7 +78,7 @@ export class AnchorResolver {
       const lowerQuery = query.toLowerCase();
       // Indexed O(1) lookup (bySymbolName is keyed by lowercased name) instead of an
       // O(n) scan over every node — this path runs on essentially every query.
-      let nameMatches = this.indexes.bySymbolName.get(lowerQuery) || [];
+      let nameMatches = this.indexes.getByName(lowerQuery);
       if (kindFilter) nameMatches = nameMatches.filter(n => n.kind === kindFilter);
 
       // Prefer definitions. If the only exact-name hits are fields/variables, do NOT

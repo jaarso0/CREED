@@ -1,4 +1,4 @@
-import { KnowledgeGraph, KGEdge } from '../../graph/graph.js';
+import { ReadableGraph, KGEdge } from '../../graph/graph.js';
 import { PathResult, StructuralEdge } from '../result-types.js';
 
 interface PathState {
@@ -8,7 +8,7 @@ interface PathState {
 }
 
 export function executePath(
-  graph: KnowledgeGraph,
+  graph: ReadableGraph,
   options: {
     from: string;
     to: string;
