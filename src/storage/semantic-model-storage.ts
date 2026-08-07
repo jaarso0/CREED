@@ -7,8 +7,14 @@ export interface SemanticModelStorage {
   load(projectRoot: string): Promise<SemanticModel>;
 }
 
+/**
+ * @deprecated Superseded by `SqliteSemanticModelStorage` (`./sqlite/`), which stores
+ * the model in an indexed database instead of one large JSON document. Kept so
+ * existing `.masai/semantic-model.json` files still load — `serve.ts` falls back to
+ * it — and as a rollback path. New code should use the SQLite storage.
+ */
 export class JsonSemanticModelStorage implements SemanticModelStorage {
-  private getStoragePath(projectRoot: string): string {
+  public getStoragePath(projectRoot: string): string {
     return path.join(projectRoot, '.masai', 'semantic-model.json');
   }
 

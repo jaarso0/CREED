@@ -3,49 +3,75 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
+import { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
+import { DB_FILENAME } from './storage/sqlite/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export async function startServer(targetPath: string) {
-  // 1. Locate semantic-model.json
-  let jsonPath = '';
-  try {
-    const isFile = await fs.stat(targetPath).then(s => s.isFile()).catch(() => false);
-    if (isFile && targetPath.endsWith('.json')) {
-      jsonPath = targetPath;
-    } else {
-      // It's a directory
-      const candidates = [
-        path.join(targetPath, 'semantic-model.json'),
-        path.join(targetPath, '.masai', 'semantic-model.json'),
-        path.join(targetPath, '..', '.masai', 'semantic-model.json')
-      ];
-      for (const cand of candidates) {
-        const exists = await fs.stat(cand).then(s => s.isFile()).catch(() => false);
-        if (exists) {
-          jsonPath = cand;
-          break;
-        }
-      }
+/**
+ * Resolves the model payload the visualizer consumes at /api/model.
+ *
+ * Prefers the SQLite index and reconstructs the model from it; falls back to a
+ * legacy `semantic-model.json` so projects indexed before the SQLite migration
+ * still visualize. Either way the served JSON matches `visualizer/src/types.ts`,
+ * so the frontend needs no changes.
+ */
+async function loadModelContent(targetPath: string): Promise<{ content: string; source: string }> {
+  const isFile = await fs.stat(targetPath).then(s => s.isFile()).catch(() => false);
+
+  // Explicit path to a legacy JSON export.
+  if (isFile && targetPath.endsWith('.json')) {
+    const content = await fs.readFile(targetPath, 'utf-8');
+    try {
+      JSON.parse(content);
+    } catch {
+      throw new Error(`Invalid JSON format in "${targetPath}"`);
     }
-  } catch (err) {
-    // Ignore error
+    return { content, source: targetPath };
   }
 
-  if (!jsonPath) {
-    throw new Error(`Could not locate semantic-model.json at or near "${targetPath}"`);
+  // Preferred: the SQLite index, at the target or one level up.
+  const dbRoots = [targetPath, path.join(targetPath, '..')];
+  for (const root of dbRoots) {
+    const dbPath = path.join(root, '.masai', DB_FILENAME);
+    const exists = await fs.stat(dbPath).then(s => s.isFile()).catch(() => false);
+    if (!exists) continue;
+
+    const storage = new SqliteSemanticModelStorage();
+    const model = await storage.load(root);
+    return { content: JSON.stringify(model), source: dbPath };
   }
 
-  console.log(`Loading semantic model from: ${jsonPath}`);
-  const modelContent = await fs.readFile(jsonPath, 'utf-8');
+  // Fallback: a JSON model written before the SQLite migration.
+  const jsonCandidates = [
+    path.join(targetPath, 'semantic-model.json'),
+    path.join(targetPath, '.masai', 'semantic-model.json'),
+    path.join(targetPath, '..', '.masai', 'semantic-model.json')
+  ];
+  for (const candidate of jsonCandidates) {
+    const exists = await fs.stat(candidate).then(s => s.isFile()).catch(() => false);
+    if (!exists) continue;
 
-  // Validate JSON structure
-  try {
-    JSON.parse(modelContent);
-  } catch (err) {
-    throw new Error(`Invalid JSON format in "${jsonPath}"`);
+    const content = await fs.readFile(candidate, 'utf-8');
+    try {
+      JSON.parse(content);
+    } catch {
+      throw new Error(`Invalid JSON format in "${candidate}"`);
+    }
+    return { content, source: candidate };
   }
+
+  throw new Error(
+    `Could not locate a semantic model at or near "${targetPath}". ` +
+    `Expected .masai/${DB_FILENAME} (run the indexer first) or a legacy semantic-model.json.`
+  );
+}
+
+export async function startServer(targetPath: string) {
+  // 1. Load the model (SQLite preferred, legacy JSON as fallback)
+  const { content: modelContent, source } = await loadModelContent(targetPath);
+  console.log(`Loading semantic model from: ${source}`);
 
   // 2. Locate visualizer assets
   // Dev path: workspace-root/visualizer/dist

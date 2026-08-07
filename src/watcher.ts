@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Pipeline } from './pipeline.js';
-import { JsonSemanticModelStorage } from './storage/semantic-model-storage.js';
+import { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
 import { KnowledgeGraph } from './graph/graph.js';
 
 const WATCH_IGNORE = new Set([
@@ -26,7 +26,7 @@ export function watchAndRebuild(
   debounceMs = 1000
 ): fs.FSWatcher {
   const pipeline = new Pipeline();
-  const storage = new JsonSemanticModelStorage();
+  const storage = new SqliteSemanticModelStorage();
 
   let timer: NodeJS.Timeout | null = null;
   let rebuilding = false;

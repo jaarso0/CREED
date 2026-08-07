@@ -2,23 +2,98 @@
 
 import * as path from 'path';
 import { Pipeline } from './pipeline.js';
-import { JsonSemanticModelStorage } from './storage/semantic-model-storage.js';
+import { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
 
+import * as os from 'os';
+import * as fs from 'fs/promises';
+import * as readline from 'readline';
 import { startServer } from './serve.js';
 
 // Export everything for programmatic use
 export { Pipeline } from './pipeline.js';
 export { JsonSemanticModelStorage } from './storage/semantic-model-storage.js';
+export { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
+export { openDatabase, getDatabasePath, databaseExists } from './storage/sqlite/db.js';
 export * from './semantic-model/types.js';
 export { KnowledgeGraph } from './graph/graph.js';
 export { startServer } from './serve.js';
 export { RetrievalEngine } from './retrieval/api.js';
 export * from './retrieval/types.js';
 
+async function runSetup() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  const question = (query: string): Promise<string> =>
+    new Promise((resolve) => rl.question(query, resolve));
+
+  console.log(`\n==================================================`);
+  console.log(` Creed MCP Setup Wizard`);
+  console.log(`==================================================\n`);
+
+  const defaultDir = process.cwd();
+  const inputDir = await question(`Enter the absolute path of the directory to index [${defaultDir}]: `);
+  const targetDir = path.resolve(inputDir.trim() || defaultDir);
+  rl.close();
+
+  // Detect Claude Desktop config path
+  let configPath = '';
+  const home = os.homedir();
+  if (process.platform === 'win32') {
+    configPath = path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Claude', 'claude_desktop_config.json');
+  } else if (process.platform === 'darwin') {
+    configPath = path.join(home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+  } else {
+    configPath = path.join(home, '.config', 'Claude', 'claude_desktop_config.json');
+  }
+
+  console.log(`\nClaude Desktop Config Path: ${configPath}`);
+
+  try {
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+
+    let config: any = {};
+    try {
+      const content = await fs.readFile(configPath, 'utf-8');
+      config = JSON.parse(content);
+    } catch (e) {
+      // Config doesn't exist or is invalid
+    }
+
+    if (!config.mcpServers) {
+      config.mcpServers = {};
+    }
+
+    config.mcpServers['creed'] = {
+      command: 'npx',
+      args: [
+        '-y',
+        'creed',
+        'mcp',
+        targetDir
+      ]
+    };
+
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    console.log(`\n✅ Successfully added 'creed' MCP server to Claude Desktop!`);
+    console.log(`Project directory registered: ${targetDir}`);
+    console.log(`\nTo apply changes, please restart your Claude Desktop client.`);
+  } catch (err: any) {
+    console.error(`\n❌ Failed to update Claude Desktop configuration:`, err.message || err);
+  }
+}
+
 // CLI Execution Support
 async function runCLI() {
   const args = process.argv.slice(2);
   const command = args[0];
+
+  if (command === 'setup' || command === 'configure') {
+    await runSetup();
+    return;
+  }
 
   if (command === 'serve' || command === 'visualize') {
     const targetDir = args[1] ? path.resolve(args[1]) : process.cwd();
@@ -34,7 +109,7 @@ async function runCLI() {
   if (command === 'mcp') {
     const targetDir = args[1] ? path.resolve(args[1]) : process.cwd();
     try {
-      const storage = new JsonSemanticModelStorage();
+      const storage = new SqliteSemanticModelStorage();
       const pipeline = new Pipeline();
       // Always rebuild on startup rather than trusting the cached model file. Loading a
       // cached model meant a restarted server could inherit a stale index — including one
@@ -84,10 +159,10 @@ async function runCLI() {
     console.log(`Diagnostics/Warns: ${model.diagnostics.length}`);
 
     // Persist model
-    const storage = new JsonSemanticModelStorage();
+    const storage = new SqliteSemanticModelStorage();
     await storage.save(model, targetDir);
     console.log(`\nSaved semantic model to:`);
-    console.log(`  ${path.join(targetDir, '.masai', 'semantic-model.json')}`);
+    console.log(`  ${storage.getStoragePath(targetDir)}`);
 
     // Derive graph stats
     const graph = pipeline.deriveGraph(model);

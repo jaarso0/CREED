@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { Pipeline } from '../src/pipeline.js';
-import { JsonSemanticModelStorage } from '../src/storage/semantic-model-storage.js';
+import { SqliteSemanticModelStorage } from '../src/storage/sqlite/sqlite-model-storage.js';
 import { RetrievalEngine } from '../src/retrieval/api.js';
 
 async function run() {
@@ -14,7 +14,7 @@ async function run() {
   }
 
   const projectRoot = path.resolve('.');
-  const storage = new JsonSemanticModelStorage();
+  const storage = new SqliteSemanticModelStorage();
 
   console.log(`\n🔍 Loading Knowledge Graph for: ${projectRoot}`);
   let model;
