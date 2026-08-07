@@ -56,7 +56,7 @@ npm run build
 }
 ```
 
-On first connect it builds a full semantic model (or loads a cached `.masai/semantic-model.json` if one already exists) and starts watching the target project for changes.
+On first connect it builds a full semantic model, writes it to `.masai/graph.db`, and starts watching the target project for changes.
 
 ### The Five Tools
 
@@ -96,7 +96,12 @@ npm run build
 node dist/index.js <path-to-target-project>
 ```
 
-Persists the model to `<path-to-target-project>/.masai/semantic-model.json`.
+Persists the model to `<path-to-target-project>/.masai/graph.db` — a normalized, indexed
+SQLite database. You can query it directly:
+
+```bash
+sqlite3 .masai/graph.db "SELECT name, kind, file_path FROM symbols WHERE name_lower = 'userservice';"
+```
 
 ---
 
@@ -121,7 +126,7 @@ For frontend development with hot reload, run `npm run serve -- <path>` in one t
 
 ```typescript
 import { Pipeline } from './src/pipeline.ts';
-import { JsonSemanticModelStorage } from './src/storage/semantic-model-storage.ts';
+import { SqliteSemanticModelStorage } from './src/storage/sqlite/sqlite-model-storage.ts';
 
 async function main() {
   const projectPath = './my-target-project';
@@ -132,7 +137,7 @@ async function main() {
   console.log(`Total symbols extracted: ${model.symbolCount}`);
   console.log(`Resolved references: ${model.resolvedReferences.length}`);
 
-  const storage = new JsonSemanticModelStorage();
+  const storage = new SqliteSemanticModelStorage();
   await storage.save(model, projectPath);
 
   const graph = pipeline.deriveGraph(model);
