@@ -1,4 +1,4 @@
-# MASAI-KG
+# CREED - code intelligence
 
 **A knowledge graph of your codebase, exposed as an MCP server — so your AI coding agent stops re-deriving structure from grep and Read on every request.**
 
