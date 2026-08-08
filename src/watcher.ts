@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Pipeline } from './pipeline.js';
 import { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
+import { SqlitePartialCache } from './storage/sqlite/partial-cache.js';
 import { ReadableGraph } from './graph/graph.js';
 import { SemanticModel } from './semantic-model/types.js';
 
@@ -47,10 +48,24 @@ export function watchAndRebuild(
     rebuilding = true;
     try {
       console.error('Change detected — rebuilding semantic model...');
-      const model = await pipeline.buildFull(targetDir);
-      await storage.save(model, targetDir);
+      // A watcher rebuild is the best case for the partial cache: one file changed,
+      // so every other file's parse output is reused and only the edit is re-parsed.
+      const cache = new SqlitePartialCache(targetDir);
+      let result;
+      try {
+        result = await pipeline.build(targetDir, { cache });
+      } finally {
+        // Released before save() opens its own write connection.
+        cache.close();
+      }
+
+      const { model, fileRecords, stats } = result;
+      await storage.save(model, targetDir, fileRecords);
       onRebuilt(model, () => pipeline.deriveGraph(model));
-      console.error(`Rebuild complete: ${model.fileCount} files, ${model.symbolCount} symbols.`);
+      console.error(
+        `Rebuild complete: ${model.fileCount} files, ${model.symbolCount} symbols ` +
+        `(${stats.parsed} parsed, ${stats.reused} reused from cache).`
+      );
     } catch (err: any) {
       console.error('Rebuild failed:', err.message || err);
     } finally {

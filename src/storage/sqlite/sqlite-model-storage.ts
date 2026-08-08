@@ -2,6 +2,8 @@ import type { Database } from 'better-sqlite3';
 import { SemanticModel, Symbol as KGSymbol } from '../../semantic-model/types.js';
 import { SemanticModelStorage } from '../semantic-model-storage.js';
 import { openDatabase, getDatabasePath, databaseExists } from './db.js';
+import { FileRecord, encodePartial } from './partial-cache.js';
+import { PIPELINE_VERSION } from './schema.js';
 import {
   symbolToRow,
   rowToSymbol,
@@ -40,10 +42,20 @@ export class SqliteSemanticModelStorage implements SemanticModelStorage {
     return databaseExists(projectRoot);
   }
 
-  public async save(model: SemanticModel, projectRoot: string): Promise<void> {
+  /**
+   * `fileRecords` carries each source file's content hash and its parse output, which
+   * a later build reads back through `SqlitePartialCache` to skip re-parsing unchanged
+   * files. Omit it and the index is still complete and correct — just without a warm
+   * cache for the next run.
+   */
+  public async save(
+    model: SemanticModel,
+    projectRoot: string,
+    fileRecords?: FileRecord[]
+  ): Promise<void> {
     const db = openDatabase(projectRoot);
     try {
-      this.writeModel(db, model);
+      this.writeModel(db, model, fileRecords);
     } finally {
       db.close();
     }
@@ -63,7 +75,7 @@ export class SqliteSemanticModelStorage implements SemanticModelStorage {
 
   // ── write ─────────────────────────────────────────────────────────────────
 
-  private writeModel(db: Database, model: SemanticModel): void {
+  private writeModel(db: Database, model: SemanticModel, fileRecords?: FileRecord[]): void {
     const insertSymbol = db.prepare(`
       INSERT INTO symbols (
         id, kind, name, name_lower, qualified_name, qualified_name_lower,
@@ -127,9 +139,14 @@ export class SqliteSemanticModelStorage implements SemanticModelStorage {
     `);
 
     const insertFile = db.prepare(`
-      INSERT INTO files (path, language, content_hash, mtime_ms, indexed_at)
-      VALUES (@path, NULL, NULL, NULL, @indexed_at)
-      ON CONFLICT(path) DO UPDATE SET indexed_at = excluded.indexed_at
+      INSERT INTO files (path, language, content_hash, mtime_ms, indexed_at, partial)
+      VALUES (@path, @language, @content_hash, @mtime_ms, @indexed_at, @partial)
+      ON CONFLICT(path) DO UPDATE SET
+        language     = excluded.language,
+        content_hash = excluded.content_hash,
+        mtime_ms     = excluded.mtime_ms,
+        indexed_at   = excluded.indexed_at,
+        partial      = excluded.partial
     `);
 
     const setMeta = db.prepare(`
@@ -176,15 +193,39 @@ export class SqliteSemanticModelStorage implements SemanticModelStorage {
 
       buildFts.run();
 
-      // Distinct source files, so `SELECT * FROM files` is useful immediately and
-      // Phase 3 has a row to hang content hashes off. The project symbol has an
-      // empty filePath and is skipped.
       const indexedAt = m.createdAt;
-      const seen = new Set<string>();
-      for (const symbol of m.symbols) {
-        if (!symbol.filePath || seen.has(symbol.filePath)) continue;
-        seen.add(symbol.filePath);
-        insertFile.run({ path: symbol.filePath, indexed_at: indexedAt });
+
+      if (fileRecords && fileRecords.length > 0) {
+        // The build supplied hashes and parse output — persist them so the next run
+        // can reuse the partials for files that have not changed.
+        for (const record of fileRecords) {
+          insertFile.run({
+            path: record.path,
+            language: record.language,
+            content_hash: record.contentHash,
+            mtime_ms: record.mtimeMs,
+            indexed_at: indexedAt,
+            partial: encodePartial(record.partial)
+          });
+        }
+      } else {
+        // No cache data available (e.g. a model loaded from elsewhere and re-saved).
+        // Still record the distinct file paths so the table reflects the index, but
+        // leave content_hash NULL — a NULL hash can never match, so the next build
+        // correctly treats every file as needing a parse.
+        const seen = new Set<string>();
+        for (const symbol of m.symbols) {
+          if (!symbol.filePath || seen.has(symbol.filePath)) continue;
+          seen.add(symbol.filePath);
+          insertFile.run({
+            path: symbol.filePath,
+            language: null,
+            content_hash: null,
+            mtime_ms: null,
+            indexed_at: indexedAt,
+            partial: null
+          });
+        }
       }
 
       // The project root symbol is stored verbatim rather than reconstructed from
@@ -196,6 +237,9 @@ export class SqliteSemanticModelStorage implements SemanticModelStorage {
       setMeta.run('created_at', m.createdAt);
       setMeta.run('file_count', String(m.fileCount));
       setMeta.run('symbol_count', String(m.symbolCount));
+      // Stamps which parse/extract logic produced the cached partials above, so a
+      // later build can reject them wholesale if the pipeline has changed.
+      setMeta.run('pipeline_version', String(PIPELINE_VERSION));
     });
 
     write(model);

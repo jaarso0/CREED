@@ -3,6 +3,7 @@
 import * as path from 'path';
 import { Pipeline } from './pipeline.js';
 import { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
+import { SqlitePartialCache } from './storage/sqlite/partial-cache.js';
 
 import * as os from 'os';
 import * as fs from 'fs/promises';
@@ -111,14 +112,30 @@ async function runCLI() {
     try {
       const storage = new SqliteSemanticModelStorage();
       const pipeline = new Pipeline();
-      // Always rebuild on startup rather than trusting the cached model file. Loading a
-      // cached model meant a restarted server could inherit a stale index — including one
-      // another (older-code) instance had clobbered onto disk — so restarts didn't reliably
-      // pick up code/source changes. A full build is a few seconds for typical repos and
-      // guarantees the served graph matches the current code and current source.
+      // The graph is always rebuilt on startup — a previously cached *model* was never
+      // trusted, because a restarted server could inherit a stale index that another
+      // (older-code) instance had clobbered onto disk.
+      //
+      // The partial cache does not weaken that guarantee: every file is still read and
+      // hashed on every startup, and merge/registry/resolution still run over the full
+      // set. Only parse+extract is skipped, and only for files whose content hash and
+      // pipeline version both match. So the served graph still reflects the current
+      // source exactly — it just gets there without re-parsing what has not changed.
       console.error(`Building semantic model for ${targetDir} on startup...`);
-      const model = await pipeline.buildFull(targetDir);
-      await storage.save(model, targetDir);
+      const cache = new SqlitePartialCache(targetDir);
+      let build;
+      try {
+        build = await pipeline.build(targetDir, { cache });
+      } finally {
+        // Closed before save() opens its write connection.
+        cache.close();
+      }
+      const { model, fileRecords, stats } = build;
+      await storage.save(model, targetDir, fileRecords);
+      console.error(
+        `Model ready: ${model.fileCount} files, ${model.symbolCount} symbols ` +
+        `(${stats.parsed} parsed, ${stats.reused} reused from cache).`
+      );
 
       // Serve the graph out of SQLite rather than the in-memory model. The model
       // object built above is released once this scope exits; from here on, node and
@@ -165,19 +182,26 @@ async function runCLI() {
   const pipeline = new Pipeline();
 
   try {
-    const model = await pipeline.buildFull(targetDir);
+    const cache = new SqlitePartialCache(targetDir);
+    let build;
+    try {
+      build = await pipeline.build(targetDir, { cache });
+    } finally {
+      cache.close();
+    }
+    const { model, fileRecords, stats: buildStats } = build;
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
 
     console.log(`✓ Analysis completed successfully in ${duration}s!`);
     console.log(`--------------------------------------------------`);
-    console.log(`Files Processed  : ${model.fileCount}`);
+    console.log(`Files Processed  : ${model.fileCount} (${buildStats.parsed} parsed, ${buildStats.reused} cached)`);
     console.log(`Total Symbols    : ${model.symbolCount}`);
     console.log(`Resolved Refs    : ${model.resolvedReferences.length}`);
     console.log(`Diagnostics/Warns: ${model.diagnostics.length}`);
 
-    // Persist model
+    // Persist model, including per-file hashes and parse output for the next run
     const storage = new SqliteSemanticModelStorage();
-    await storage.save(model, targetDir);
+    await storage.save(model, targetDir, fileRecords);
     console.log(`\nSaved semantic model to:`);
     console.log(`  ${storage.getStoragePath(targetDir)}`);
 

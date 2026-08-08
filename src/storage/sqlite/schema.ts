@@ -6,7 +6,20 @@ import type { Database } from 'better-sqlite3';
  * derived cache of the source tree, never user data, so a rebuild is always
  * cheaper and safer than a migration path we'd have to keep correct forever.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
+
+/**
+ * Identifies the parse/extract logic that produced the cached per-file partials in
+ * `files.partial`. A file's content hash tells us the *input* is unchanged; this
+ * tells us the *code that processed it* is unchanged too.
+ *
+ * BUMP THIS whenever extraction output changes — new tree-sitter queries, a new
+ * symbol kind, a changed id scheme, an extractor bug fix. Forgetting to means users
+ * keep serving partials produced by the old logic until the file happens to change.
+ * A schema bump also invalidates the cache, so this only needs bumping for changes
+ * that leave the schema alone.
+ */
+export const PIPELINE_VERSION = 1;
 
 /**
  * Substring matching (CandidateDiscovery's "name contains token") has no usable
@@ -59,12 +72,23 @@ const DDL = `
     value TEXT
   );
 
+  /*
+   * One row per source file. The partial column holds the gzipped JSON of that
+   * file's PartialSemanticModel — the output of parse+extract, which is the
+   * expensive stage. Keyed by content_hash so an unchanged file skips to merge.
+   *
+   * Stored as an opaque blob rather than reconstructed from the normalized tables
+   * because a partial contains things those tables do not: every reference
+   * candidate (not just the unresolved ones) and localTypeBindings, which are
+   * resolver-only plumbing and never enter the graph.
+   */
   CREATE TABLE IF NOT EXISTS files (
     path         TEXT PRIMARY KEY,
     language     TEXT,
     content_hash TEXT,
     mtime_ms     INTEGER,
-    indexed_at   TEXT
+    indexed_at   TEXT,
+    partial      BLOB
   );
 
   CREATE TABLE IF NOT EXISTS symbols (

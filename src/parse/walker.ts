@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { detectLanguage } from './lang-detect.js';
+import { detectLanguage, Language } from './lang-detect.js';
 import { ParsedFile } from './parsed-file.js';
 import { parserRegistry } from './parser-registry.js';
 
@@ -81,6 +81,97 @@ class GitIgnoreMatcher {
 
     return ignored;
   }
+}
+
+/**
+ * A supported source file that has been located and read, but not yet parsed.
+ *
+ * Splitting discovery from parsing is what lets the pipeline hash a file's contents
+ * and decide whether it needs parsing at all. Reading was already unavoidable, so
+ * hashing costs almost nothing while parse+extract — the expensive part — becomes
+ * skippable for unchanged files.
+ */
+export interface SourceFile {
+  filePath: string;
+  absolutePath: string;
+  language: Language;
+  sourceCode: string;
+  mtimeMs: number;
+}
+
+/** Parses one already-read source file into a tree-sitter AST. */
+export function parseSourceFile(file: SourceFile): ParsedFile {
+  const parser = parserRegistry.getParser(file.language);
+  // tree-sitter's Node binding defaults to a ~32KB parse buffer and throws
+  // "Invalid argument" on larger inputs — silently dropping every file over
+  // that size from the graph. Size the buffer to the source (with headroom).
+  const bufferSize = Buffer.byteLength(file.sourceCode, 'utf8') + 4096;
+  const tree = parser.parse(file.sourceCode, undefined, { bufferSize });
+
+  return {
+    filePath: file.filePath,
+    absolutePath: file.absolutePath,
+    language: file.language,
+    tree,
+    sourceCode: file.sourceCode
+  };
+}
+
+/**
+ * Walks a directory recursively and returns every supported source file, read but
+ * unparsed. Honours the same exclusions as `parseProject`.
+ */
+export async function walkProject(projectRoot: string): Promise<SourceFile[]> {
+  const normalizedRoot = path.resolve(projectRoot);
+  const sourceFiles: SourceFile[] = [];
+
+  let gitignoreMatcher: GitIgnoreMatcher | null = null;
+  try {
+    const gitignorePath = path.join(normalizedRoot, '.gitignore');
+    const content = await fs.readFile(gitignorePath, 'utf-8');
+    gitignoreMatcher = new GitIgnoreMatcher(content);
+  } catch (err) {
+    // No .gitignore, that's fine
+  }
+
+  async function walk(currentDir: string) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      const relativePath = path.relative(normalizedRoot, fullPath);
+      const isDirectory = entry.isDirectory();
+
+      if (DEFAULT_EXCLUDE.has(entry.name.toLowerCase())) continue;
+      if (entry.name.startsWith('.') && entry.name !== '.' && entry.name !== '..') continue;
+      if (gitignoreMatcher && gitignoreMatcher.shouldIgnore(relativePath, isDirectory)) continue;
+
+      if (isDirectory) {
+        await walk(fullPath);
+        continue;
+      }
+
+      const lang = detectLanguage(entry.name);
+      if (!lang) continue;
+
+      try {
+        const sourceCode = await fs.readFile(fullPath, 'utf-8');
+        const stat = await fs.stat(fullPath);
+        sourceFiles.push({
+          filePath: relativePath.replace(/\\/g, '/'),
+          absolutePath: fullPath.replace(/\\/g, '/'),
+          language: lang,
+          sourceCode,
+          mtimeMs: stat.mtimeMs
+        });
+      } catch (err) {
+        console.error(`Failed to read file ${fullPath}:`, err);
+      }
+    }
+  }
+
+  await walk(normalizedRoot);
+  return sourceFiles;
 }
 
 /**
