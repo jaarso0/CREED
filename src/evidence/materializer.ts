@@ -303,47 +303,87 @@ export class EvidenceMaterializer {
   /**
    * Scans upwards from startLine - 1 to extract block comments (# or // or /*).
    */
+  /**
+   * The doc comment immediately above a symbol, cleaned of comment syntax.
+   *
+   * Scans back to the *start* of the block, not merely a fixed number of lines. A
+   * previous version capped the backward walk at 6 lines, which on any longer JSDoc
+   * captured its tail — the output began mid-sentence, lost the opening summary (the
+   * single most useful line), and kept the raw `*` and closing marker. The cap here is
+   * a runaway guard, not a content limit; trimming to something readable happens after
+   * the full block is found, from the top.
+   */
   private extractPrecedingComments(lines: string[], startLine: number): string | null {
-    const commentLines: string[] = [];
+    const MAX_SCAN = 200;       // guard against an unterminated block eating the file
+    const MAX_DOC_LINES = 6;    // how much to keep, counted from the summary down
+
+    const raw: string[] = [];
     let idx = startLine - 1;
+    let scanned = 0;
     let inBlockComment = false;
 
-    while (idx >= 0 && commentLines.length < 6) {
+    while (idx >= 0 && scanned < MAX_SCAN) {
       const line = lines[idx].trim();
+      scanned++;
 
-      // Stop on empty line if we have comments already
       if (!line) {
-        if (commentLines.length > 0) break;
+        // Blank lines inside a block comment belong to it; outside, they end the search.
+        if (inBlockComment) {
+          raw.unshift(line);
+          idx--;
+          continue;
+        }
+        if (raw.length > 0) break;
         idx--;
         continue;
       }
 
-      // Check block comments ending
-      if (line.endsWith('*/')) {
+      if (!inBlockComment && line.endsWith('*/')) {
         inBlockComment = true;
-        commentLines.unshift(line);
+        raw.unshift(line);
+        // A one-line block comment opens and closes on the same line.
+        if (line.startsWith('/*')) break;
         idx--;
         continue;
       }
 
       if (inBlockComment) {
-        commentLines.unshift(line);
-        if (line.startsWith('/*')) {
-          inBlockComment = false;
-        }
+        raw.unshift(line);
+        if (line.startsWith('/*')) break;   // reached the opener — stop here, not earlier
         idx--;
         continue;
       }
 
       if (line.startsWith('//') || line.startsWith('#')) {
-        commentLines.unshift(line);
+        raw.unshift(line);
         idx--;
-      } else {
-        // Stop scanning if we hit code
-        break;
+        continue;
       }
+
+      break; // hit code
     }
 
-    return commentLines.length > 0 ? commentLines.join('\n') : null;
+    if (raw.length === 0) return null;
+
+    const cleaned = raw
+      .map(line =>
+        line
+          .replace(/^\/\*\*?\s?/, '') // opening /* or /** (and the space after it)
+          .replace(/\*\/$/, '')       // closing */
+          .replace(/^\s*\*\s?/, '')   // leading * on continuation lines
+          .replace(/^\/\/\s?/, '')    // // line comments
+          .replace(/^#\s?/, '')       // # line comments (python)
+          .trimEnd()
+      )
+      // Drop blank lines only at the edges, so the summary starts the output.
+      .filter((line, i, arr) => line.trim() !== '' || (i > 0 && i < arr.length - 1));
+
+    while (cleaned.length > 0 && cleaned[0].trim() === '') cleaned.shift();
+    while (cleaned.length > 0 && cleaned[cleaned.length - 1].trim() === '') cleaned.pop();
+    if (cleaned.length === 0) return null;
+
+    const kept = cleaned.slice(0, MAX_DOC_LINES);
+    if (cleaned.length > MAX_DOC_LINES) kept.push('…');
+    return kept.join('\n');
   }
 }

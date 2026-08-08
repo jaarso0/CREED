@@ -159,23 +159,29 @@ export class RequestController {
       }
     }
 
-    // Prepend a transparency note when a loose query was auto-resolved, so the caller
-    // knows which symbol it landed on and how to redirect if it guessed wrong.
+    // ── Header: what was asked, and how much was found ────────────────────────
+    const queryText = plan.anchors.map(a => a.query).filter(Boolean).join(' ');
+    const fileCount = new Set(evidence.nodes.map(n => n.file).filter(Boolean)).size;
+    const header =
+      `**Exploration: ${queryText}**\n\n` +
+      `Found ${evidence.nodes.length} symbol(s) across ${fileCount} file(s).`;
+    contextPackage.serializedContext = header + '\n\n' + contextPackage.serializedContext;
+
+    // ── Footer: caveats and budget accounting ─────────────────────────────────
+    // These used to be prepended, which meant a warning was the first thing the caller
+    // read even on a perfectly good result — training them to ignore it. Notes belong
+    // after the content they qualify.
+    const notes: string[] = [];
+
     if (disambiguations && disambiguations.length > 0) {
-      const noteLines = disambiguations.map(d => {
+      for (const d of disambiguations) {
         const alts = d.alternatives.length > 0
           ? ` — also matched: ${d.alternatives.map(a => a.qualifiedName || a.nodeId).join(', ')}. Pass an exact ID to pick another.`
           : '';
-        return `- "${d.query}" → ${d.chosen.qualifiedName} [${d.chosen.nodeId}]${alts}`;
-      });
-      contextPackage.serializedContext =
-        `Note: auto-resolved ambiguous anchor(s) to the best match:\n${noteLines.join('\n')}\n\n` +
-        contextPackage.serializedContext;
+        notes.push(`Auto-resolved "${d.query}" → \`${d.chosen.qualifiedName}\` [${d.chosen.nodeId}]${alts}`);
+      }
     }
 
-    // Low-confidence handoff, prepended LAST so it's the first thing the caller sees: if a
-    // free-form query anchored on few of its terms, or the anchors it did resolve don't
-    // connect, warn that the view may be incomplete — mirroring codegraph's confidence note.
     if (plan.constraints?.synthesizeFlow) {
       const requested = plan.anchors.length;
       const resolved = resolution.anchors.length;
@@ -186,11 +192,27 @@ export class RequestController {
         const reasons: string[] = [];
         if (tooThin || weakCoverage) reasons.push(`only ${resolved} of ${requested} query terms resolved to symbols`);
         if (noConnections) reasons.push(`no call/render paths connect the resolved symbols`);
-        contextPackage.serializedContext =
+        notes.push(
           `⚠ Low confidence: ${reasons.join('; ')}. This view may be incomplete — ` +
-          `try naming specific symbols by exact name (or use search_symbols to find them first).\n\n` +
-          contextPackage.serializedContext;
+          `try naming specific symbols by exact name (or use search_symbols to find them first).`
+        );
       }
+    }
+
+    const { omittedNodes, truncatedNodes, truncatedForSize } = contextPackage.omissions;
+    if (omittedNodes > 0 || truncatedNodes > 0 || truncatedForSize) {
+      const parts: string[] = [];
+      if (omittedNodes > 0) parts.push(`${omittedNodes} symbol(s) omitted`);
+      if (truncatedNodes > 0) parts.push(`${truncatedNodes} truncated`);
+      if (truncatedForSize) parts.push('output hit the hard size cap');
+      notes.push(
+        `${parts.join(', ')} to fit a ${contextPackage.tokenUsage.budget}-token budget ` +
+        `(~${contextPackage.tokenUsage.estimated} used). Narrow with depth, direction, or edgeKinds to see more.`
+      );
+    }
+
+    if (notes.length > 0) {
+      contextPackage.serializedContext += '\n\n---\n' + notes.map(n => `> ${n}`).join('\n');
     }
 
     const durationMs = Date.now() - startTime;
@@ -256,7 +278,7 @@ export class RequestController {
     }
 
     if (blocks.length === 0) return '';
-    return `=== FLOW (call path among the queried symbols) ===\n${blocks.join('\n\n')}`;
+    return `**Call paths among the queried symbols**\n\n${blocks.join('\n\n')}`;
   }
 
   /**
@@ -289,17 +311,18 @@ export class RequestController {
     }
 
     if (lines.length === 0) return '';
-    return `=== BLAST RADIUS (what depends on the queried symbols) ===\n${lines.join('\n')}`;
+    return `**Blast radius — what depends on these (update/verify before editing)**\n\n${lines.join('\n')}`;
   }
 
-  /** "QualifiedName (path:line)" for a node id, matching the compact reference style. */
+  /** "`QualifiedName` (kind — path:line)" for a node id, the compact reference style. */
   private formatNodeRef(id: string): string {
     const n = this.graph.getNode(id);
     if (!n) return id;
     const range = n.properties?.range as { start?: { line: number } } | undefined;
     const line = range?.start ? range.start.line + 1 : undefined;
     const name = n.qualifiedName || n.name;
-    return line !== undefined ? `${name} (${n.filePath}:${line})` : `${name} (${n.filePath})`;
+    const location = line !== undefined ? `${n.filePath}:${line}` : n.filePath;
+    return `\`${name}\` (${n.kind} — ${location})`;
   }
 
   private edgeVerb(kind?: string): string {

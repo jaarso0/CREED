@@ -1,6 +1,6 @@
 import { MaterializedEvidence, MaterializedNode, MaterializedEdge } from '../../evidence/types.js';
 import { RepresentationLevel } from '../budget-allocator.js';
-import { getDisplayName, serializeNavigationPackage, formatResolutionConfidence, formatUnresolvedRefs, formatTestCoverage, formatConfidenceSummary } from './helper.js';
+import { getDisplayName, serializeSourceSection, formatResolutionConfidence, formatUnresolvedRefs, formatTestCoverage, formatConfidenceSummary } from './helper.js';
 
 export function serializePath(
   evidence: MaterializedEvidence,
@@ -19,14 +19,10 @@ export function serializePath(
     edgeMap.set(`${e.source}->${e.target}`, e);
   }
 
-  let output = '=== PATH FINDING RESULT ===\n\n';
-
-  const pathReferenceEdges = evidence.edges.filter(e => e.resolutionMethod !== undefined);
-  const summary = formatConfidenceSummary(pathReferenceEdges, 'reference edge(s) across all path(s)');
-  if (summary) output += summary + '\n';
+  let output = '';
 
   paths.forEach((pathObj, pathIdx) => {
-    output += `Path ${pathIdx + 1}:\n`;
+    output += paths.length > 1 ? `**Call path ${pathIdx + 1}**\n\n` : '**Call path**\n\n';
 
     const printedEdges = new Set<string>();
     pathObj.nodes.forEach((nodeId, idx) => {
@@ -34,50 +30,49 @@ export function serializePath(
       const lvl = levels.get(nodeId) || 'SIGNATURE';
 
       if (!node || lvl === 'OMIT') {
-        output += `  [Omitted: ${nodeId}]\n`;
+        output += `${idx + 1}. [Omitted: ${nodeId}]\n`;
       } else {
         const displayName = getDisplayName(node, nodeId);
-        output += `  ${displayName} (${node.kind}) [Role: ${node.structuralRole}]\n`;
-        output += `    File: ${node.file}\n`;
-        if (node.signature && lvl !== 'OMIT') {
-          output += `    Signature: ${node.signature}\n`;
-        }
+        const line = node.range ? `:${node.range.startLine}` : '';
+        output += `${idx + 1}. \`${displayName}\` (${node.kind} — ${node.file}${line})\n`;
+        if (node.signature) output += `   \`${node.signature}\`\n`;
         const unresolvedNote = formatUnresolvedRefs(node);
-        if (unresolvedNote) output += '  ' + unresolvedNote;
+        if (unresolvedNote) output += ' ' + unresolvedNote;
         const testNote = formatTestCoverage(node);
-        if (testNote) output += '  ' + testNote;
+        if (testNote) output += ' ' + testNote;
       }
 
-      // Print relationship with callsites
+      // The edge carrying the flow to the next step, with its callsite.
       if (idx < pathObj.nodes.length - 1) {
         const nextNodeId = pathObj.nodes[idx + 1];
         const edge = edgeMap.get(`${nodeId}->${nextNodeId}`) || edgeMap.get(`${nodeId}->${nextNodeId}:call`);
 
-        // Prevent duplicate path link printing
         const edgeKey = `${nodeId}->${nextNodeId}:${edge?.kind || 'relation'}:${edge?.callsite?.line || ''}`;
         if (printedEdges.has(edgeKey)) {
-          output += `         ↓\n         ↓\n`;
+          output += `   ↓\n`;
           return;
         }
         printedEdges.add(edgeKey);
 
-        output += `         ↓\n`;
         if (edge) {
-          output += `         [${edge.kind.toUpperCase()}]${formatResolutionConfidence(edge.resolutionMethod)}`;
+          output += `   ↓ ${edge.kind}${formatResolutionConfidence(edge.resolutionMethod)}`;
           if (edge.callsite) {
-            output += ` at ${edge.callsite.file}:${edge.callsite.line} -> "${edge.callsite.snippet}"`;
+            output += ` — ${edge.callsite.file}:${edge.callsite.line} → \`${edge.callsite.snippet}\``;
           }
-          output += `\n         ↓\n`;
+          output += `\n`;
         } else {
-          output += `         ↓ [RELATION]\n         ↓\n`;
+          output += `   ↓ relates to\n`;
         }
       }
     });
-    output += '\n--------------------------------------------------\n\n';
+    output += '\n';
   });
 
-  // Recommended Code Ranges to Read Next
-  const spansOutput = serializeNavigationPackage(evidence.nodes, levels);
+  const pathReferenceEdges = evidence.edges.filter(e => e.resolutionMethod !== undefined);
+  const summary = formatConfidenceSummary(pathReferenceEdges, 'reference edge(s) across all path(s)');
+  if (summary) output += summary + '\n';
+
+  const spansOutput = serializeSourceSection(evidence.nodes, levels);
   if (spansOutput) {
     output += spansOutput;
   }

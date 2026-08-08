@@ -194,20 +194,56 @@ export class MCPServer {
         result.graphBuiltAt = this.graph.getBuiltAt() ?? 'unknown';
       }
 
-      // Return the result formatted as MCP text content
       this.sendResult(id, {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2)
-          }
-        ]
+        content: [{ type: 'text', text: this.renderResult(result) }]
       });
 
     } catch (err: any) {
       console.error(`Error executing tool ${toolName}:`, err);
       this.sendToolError(id, err.message || String(err));
     }
+  }
+
+  /**
+   * Renders a controller result as the text the caller actually reads.
+   *
+   * Successful results carry `serializedContext`, already-formatted markdown — it is
+   * emitted directly rather than embedded in JSON. Wrapping it meant the reader received
+   * escaped `\n` sequences instead of formatted text, and paid ~4% overhead for the
+   * escaping. The other statuses (not_found, ambiguous, search candidates) have no prose
+   * form, so they are rendered as compact markdown lists.
+   */
+  private renderResult(result: any): string {
+    if (!result || typeof result !== 'object') return String(result);
+
+    if (typeof result.serializedContext === 'string') {
+      return result.serializedContext;
+    }
+
+    if (result.status === 'success' && Array.isArray(result.candidates)) {
+      if (result.candidates.length === 0) return 'No matching symbols found.';
+      const lines = result.candidates.map(
+        (c: any) => `- \`${c.qualifiedName || c.name}\` — ${c.file}\n  [ID: ${c.nodeId}]`
+      );
+      return `**Matching symbols (${result.candidates.length})**\n\n${lines.join('\n')}`;
+    }
+
+    if (result.status === 'ambiguous' && Array.isArray(result.ambiguousAnchors)) {
+      const blocks = result.ambiguousAnchors.map((a: any) => {
+        const items = a.candidates
+          .map((c: any) => `  - \`${c.qualifiedName || c.name}\` — ${c.file}\n    [ID: ${c.nodeId}]`)
+          .join('\n');
+        return `- "${a.query}" matched ${a.candidates.length} symbols:\n${items}`;
+      });
+      return `**Ambiguous query** — pass an exact ID to pick one.\n\n${blocks.join('\n')}`;
+    }
+
+    if (result.status === 'not_found') {
+      return `**Not found** — ${result.message || 'no symbols matched the query.'}`;
+    }
+
+    // Unknown shape: JSON is still better than dropping information.
+    return JSON.stringify(result, null, 2);
   }
 
   private getToolsList() {

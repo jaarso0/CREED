@@ -1,5 +1,21 @@
 import { MaterializedNode } from '../../evidence/types.js';
 import { RepresentationLevel } from '../budget-allocator.js';
+import { EXTENSION_MAP } from '../../parse/lang-detect.js';
+
+/**
+ * Markdown fence tag for a file, so returned source syntax-highlights in the client.
+ * Reuses the parser's extension table rather than duplicating it — anything creed can
+ * parse, it can tag. `tsx`/`jsx` are mapped to their base language because that is what
+ * markdown renderers actually recognise.
+ */
+export function fenceLanguage(filePath: string): string {
+  const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+  const lang = EXTENSION_MAP[ext];
+  if (!lang) return '';
+  if (lang === 'tsx') return 'typescript';
+  if (lang === 'jsx') return 'javascript';
+  return lang;
+}
 
 export function getDisplayName(node: any, fallbackId: string): string {
   if (!node) return fallbackId;
@@ -62,90 +78,135 @@ export function formatConfidenceSummary(
   return parts.join(' ') + '\n';
 }
 
+/** A contiguous run of source lines destined for one fenced block. */
+interface SourceSpan {
+  startLine: number;   // 1-indexed
+  endLine: number;
+  text: string;
+}
+
 /**
- * Serializes target nodes into a clean "Navigation Package" recommended reading index.
- * Groups by file path, sorts chronologically by line number, and details roles/kinds.
+ * Renders the source section: verbatim, line-numbered code grouped by file.
  *
- * Nodes allocated SNIPPET/FULL representation by the budget allocator get their actual
- * source inlined here (already fetched and span-merged by the optimizer) — the agent
- * doesn't need a follow-up Read for those. SIGNATURE-level nodes still just get a
- * line-range pointer, since their source wasn't fetched/budgeted for inclusion.
+ * The line-number prefix is `<n>\t<text>`, matching what the `Read` tool returns, so a
+ * caller can cite `file.ts:42` from what it was given instead of re-opening the file to
+ * find out where anything lives. Fences are language-tagged for highlighting.
+ *
+ * Nodes allocated SNIPPET/FULL by the budget allocator contribute their real source
+ * (already fetched and span-merged upstream by `QueryContextOptimizer.optimize`).
+ * SIGNATURE-level nodes contribute only their declaration line — enough to know the
+ * symbol exists and what it looks like, without spending budget on the body.
  */
-export function serializeNavigationPackage(
+export function serializeSourceSection(
   nodes: MaterializedNode[],
   levels: Map<string, RepresentationLevel>,
   excludeNodeIds: string[] = []
 ): string {
   const targetNodes = nodes.filter(n => {
     if (excludeNodeIds.includes(n.nodeId)) return false;
-    const lvl = levels.get(n.nodeId) || 'SIGNATURE';
-    return lvl !== 'OMIT';
+    if (!n.file) return false;
+    return (levels.get(n.nodeId) || 'SIGNATURE') !== 'OMIT';
   });
 
   if (targetNodes.length === 0) return '';
 
-  let output = 'Recommended Code Ranges to Read Next:\n\n';
-
-  // Group by file path
   const fileGroups = new Map<string, MaterializedNode[]>();
-  targetNodes.forEach(node => {
+  for (const node of targetNodes) {
     const list = fileGroups.get(node.file) || [];
     list.push(node);
     fileGroups.set(node.file, list);
-  });
+  }
 
-  // Sort files alphabetically
-  const sortedFiles = Array.from(fileGroups.keys()).sort();
+  let output = '**Source Code**\n\n';
+  output +=
+    '> The code below is the verbatim, current on-disk source of these symbols, ' +
+    'line-numbered. Treat it as a Read you have already performed — no need to reopen ' +
+    'these files.\n\n';
 
-  sortedFiles.forEach(file => {
-    output += `File: ${file}\n`;
+  for (const file of Array.from(fileGroups.keys()).sort()) {
+    const fileNodes = fileGroups
+      .get(file)!
+      .sort((a, b) => (a.range?.startLine || 0) - (b.range?.startLine || 0));
 
-    // Sort nodes in this file by starting line number
-    const fileNodes = fileGroups.get(file)!;
-    fileNodes.sort((a, b) => {
-      const startA = a.range?.startLine || 0;
-      const startB = b.range?.startLine || 0;
-      return startA - startB;
+    output += `**\`${file}\`** — ${summarizeSymbols(fileNodes)}\n\n`;
+
+    const spans = collectSpans(fileNodes, levels);
+    if (spans.length === 0) {
+      output += '\n';
+      continue;
+    }
+
+    output += '```' + fenceLanguage(file) + '\n';
+    spans.forEach((span, i) => {
+      // A break between non-adjacent spans is marked, so the reader knows lines were
+      // skipped rather than assuming the block is contiguous.
+      if (i > 0 && span.startLine > spans[i - 1].endLine + 1) {
+        output += '\n... (gap) ...\n\n';
+      }
+      output += numberLines(span.text, span.startLine) + '\n';
     });
+    output += '```\n\n';
+  }
 
-    // Avoid printing the same merged source span twice for nodes that collapsed together
-    const printedSpans = new Set<string>();
+  return output.trimEnd();
+}
 
-    fileNodes.forEach(node => {
-      const dispName = getDisplayName(node, node.nodeId);
-      const role = node.structuralRole;
-      const rangeStr = node.range ? `${node.range.startLine}-${node.range.endLine}` : '';
-      const lvl = levels.get(node.nodeId) || 'SIGNATURE';
+/** "Name(kind), Name(kind), +N more" — what this file contributes, at a glance. */
+function summarizeSymbols(nodes: MaterializedNode[]): string {
+  const MAX = 5;
+  const names = nodes.map(n => `${n.name || getDisplayName(n, n.nodeId)}(${n.kind})`);
+  const shown = names.slice(0, MAX).join(', ');
+  return names.length > MAX ? `${shown}, +${names.length - MAX} more` : shown;
+}
 
-      const parts: string[] = [];
-      parts.push(dispName);
-      parts.push(`Role: ${role}`);
-      if (node.kind !== 'file' && node.kind !== 'class') {
-        parts.push(`Kind: ${node.kind}`);
-      }
+/**
+ * Turns each node into at most one span, de-duplicated and sorted. Nodes that
+ * span-merged upstream share an identical range and must not print twice.
+ */
+function collectSpans(
+  nodes: MaterializedNode[],
+  levels: Map<string, RepresentationLevel>
+): SourceSpan[] {
+  const seen = new Set<string>();
+  const spans: SourceSpan[] = [];
 
-      const infoStr = parts.join(', ');
+  for (const node of nodes) {
+    const level = levels.get(node.nodeId) || 'SIGNATURE';
+    let span: SourceSpan | null = null;
 
-      if (rangeStr) {
-        output += `  - Lines ${rangeStr}: ${infoStr}\n`;
-      } else {
-        output += `  - ${infoStr}\n`;
-      }
+    if ((level === 'FULL' || level === 'SNIPPET') && node.source) {
+      const text =
+        level === 'SNIPPET' && node.source.text.length > 800
+          ? node.source.text.slice(0, 800)
+          : node.source.text;
+      span = {
+        startLine: node.source.startLine,
+        endLine: node.source.startLine + text.split('\n').length - 1,
+        text
+      };
+    } else if (node.signature && node.range) {
+      // Declaration line only — keeps the symbol visible without spending budget.
+      span = {
+        startLine: node.range.startLine,
+        endLine: node.range.startLine,
+        text: node.signature
+      };
+    }
 
-      if ((lvl === 'SNIPPET' || lvl === 'FULL') && node.source) {
-        const spanKey = `${node.source.startLine}-${node.source.endLine}`;
-        if (!printedSpans.has(spanKey)) {
-          printedSpans.add(spanKey);
-          const text = lvl === 'SNIPPET' ? node.source.text.slice(0, 800) : node.source.text;
-          const truncatedNote = lvl === 'SNIPPET' && node.source.text.length > 800 ? ' … (truncated)' : '';
-          output += '    ```\n';
-          output += text.split('\n').map(l => '    ' + l).join('\n');
-          output += truncatedNote + '\n    ```\n';
-        }
-      }
-    });
-    output += '\n';
-  });
+    if (!span) continue;
+    const key = `${span.startLine}-${span.endLine}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    spans.push(span);
+  }
 
-  return output.trim();
+  return spans.sort((a, b) => a.startLine - b.startLine);
+}
+
+/** Prefixes each line with its 1-indexed number and a tab, as the Read tool does. */
+function numberLines(text: string, startLine: number): string {
+  return text
+    .split('\n')
+    .map((line, i) => `${startLine + i}\t${line}`)
+    .join('\n');
 }

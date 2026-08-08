@@ -1,6 +1,6 @@
 import { MaterializedEvidence } from '../../evidence/types.js';
 import { RepresentationLevel } from '../budget-allocator.js';
-import { getDisplayName, serializeNavigationPackage, formatResolutionConfidence, formatUnresolvedRefs, formatTestCoverage, formatConfidenceSummary } from './helper.js';
+import { getDisplayName, serializeSourceSection, formatResolutionConfidence, formatUnresolvedRefs, formatTestCoverage, formatConfidenceSummary } from './helper.js';
 
 export function serializeRegion(
   evidence: MaterializedEvidence,
@@ -10,18 +10,16 @@ export function serializeRegion(
 ): string {
   const nodeMap = new Map(evidence.nodes.map(n => [n.nodeId, n]));
 
-  let output = '=== NEIGHBORHOOD REGION EXPORT ===\n\n';
-
-  // 1. List Anchors
-  output += 'Anchors:\n';
+  let output = '**Anchors**\n\n';
   roots.forEach(rootId => {
     const node = nodeMap.get(rootId);
     if (node) {
       const displayName = getDisplayName(node, rootId);
-      output += `- ${displayName} (${node.kind}) [ID: ${node.nodeId}]\n`;
-      output += `  File: ${node.file}\n`;
-      if (node.signature) output += `  Signature: ${node.signature}\n`;
-      if (node.docs) output += `  Docs:\n${node.docs.split('\n').map(l => '    ' + l).join('\n')}\n`;
+      const line = node.range ? `:${node.range.startLine}` : '';
+      output += `- \`${displayName}\` (${node.kind} — ${node.file}${line})\n`;
+      if (node.signature) output += `  \`${node.signature}\`\n`;
+      if (node.docs) output += `${node.docs.split('\n').map(l => '  > ' + l).join('\n')}\n`;
+      output += `  [ID: ${node.nodeId}]\n`;
       output += formatUnresolvedRefs(node);
       output += formatTestCoverage(node);
     } else {
@@ -35,8 +33,7 @@ export function serializeRegion(
   // containment edges (has_member/owns) aren't "resolved" in the same sense, so they're
   // excluded from the confidence rollup to avoid inflating the high-confidence count.
   const referenceEdges = evidence.edges.filter(e => e.resolutionMethod !== undefined);
-  output += formatConfidenceSummary(referenceEdges, 'reference edge(s) in this neighborhood');
-  output += '\nRelationships:\n';
+  output += '**Relationships**\n\n';
 
   // Edges arrive already proactively capped and relevance-ranked by the executor
   // (see executeRegion's edgeLimit) — so a hub query never materializes thousands of
@@ -65,19 +62,22 @@ export function serializeRegion(
     const srcName = getDisplayName(src, edge.source);
     const tgtName = getDisplayName(tgt, edge.target);
 
-    output += `- ${srcName} --[${edge.kind}]--> ${tgtName}${formatResolutionConfidence(edge.resolutionMethod)}\n`;
+    output += `- \`${srcName}\` --[${edge.kind}]--> \`${tgtName}\`${formatResolutionConfidence(edge.resolutionMethod)}\n`;
     if (edge.callsite) {
-      output += `  Callsite: ${edge.callsite.file}:${edge.callsite.line} -> "${edge.callsite.snippet}"\n`;
+      output += `  ${edge.callsite.file}:${edge.callsite.line} → \`${edge.callsite.snippet}\`\n`;
     }
   });
   const totalOmitted = Math.max(0, dedupedEdges.length - shown.length) + omittedEdgeCount;
   if (totalOmitted > 0) {
-    output += `... and ${totalOmitted} more edge(s) not shown (relevance-capped). Narrow with edgeKinds, direction, or a smaller depth to focus the result.\n`;
+    output += `- … ${totalOmitted} more edge(s) not shown (relevance-capped). Narrow with edgeKinds, direction, or a smaller depth.\n`;
   }
   output += '\n';
 
-  // 3. Recommended Code Ranges to Read Next
-  const spansOutput = serializeNavigationPackage(evidence.nodes, levels);
+  const confidence = formatConfidenceSummary(referenceEdges, 'reference edge(s) in this neighborhood');
+  if (confidence) output += confidence + '\n';
+
+  // 3. Verbatim, line-numbered source grouped by file
+  const spansOutput = serializeSourceSection(evidence.nodes, levels);
   if (spansOutput) {
     output += spansOutput;
   }

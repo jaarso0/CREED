@@ -396,7 +396,7 @@ class CheckoutController {
     );
 
     // Verify optimized text
-    expect(result.serializedContext).toContain('=== NEIGHBORHOOD REGION EXPORT ===');
+    expect(result.serializedContext).toContain('**Anchors**');
     expect(result.serializedContext).toContain('charge');
     expect(result.serializedContext).toContain('refund');
   });
@@ -413,7 +413,10 @@ class CheckoutController {
     });
 
     expect(resAmbiguous.status).toBe('success');
-    expect(resAmbiguous.serializedContext).toContain('auto-resolved ambiguous anchor');
+    // The transparency note is now a footer, not a banner — it qualifies the result
+    // rather than preceding it.
+    expect(resAmbiguous.serializedContext).toContain('Auto-resolved "payment"');
+    expect(resAmbiguous.serializedContext.startsWith('**Exploration:')).toBe(true);
 
     // Search mode still returns the raw candidate list for the caller to choose from.
     const resSearch = await controller.processPlan({
@@ -437,6 +440,15 @@ class CheckoutController {
     expect(resSuccess.status).toBe('success');
     expect(resSuccess.serializedContext).toContain('runCheckout');
     expect(resSuccess.tokenUsage.estimated).toBeGreaterThan(0);
+
+    // The point of the format change: source arrives verbatim, line-numbered, in a
+    // language-tagged fence under a per-file header — citable without reopening the file.
+    const ctx = resSuccess.serializedContext;
+    expect(ctx).toContain('**Source Code**');
+    expect(ctx).toContain('**`checkout.ts`**');
+    expect(ctx).toContain('```typescript');
+    // "<lineNumber>\t<code>", matching what the Read tool returns.
+    expect(ctx).toMatch(/\n\d+\t/);
   });
 
   test('explore_flow resolves multiple anchors, tolerates noise, and synthesizes the connecting flow', async () => {
@@ -452,12 +464,15 @@ class CheckoutController {
     expect(res.status).toBe('success');
     // The synthesized flow section shows the call path connecting the two named symbols,
     // rendered as a numbered vertical chain with the edge verb between steps.
-    expect(res.serializedContext).toContain('=== FLOW (call path among the queried symbols) ===');
-    expect(res.serializedContext).toContain('1. CheckoutController.runCheckout');
+    expect(res.serializedContext).toContain('**Call paths among the queried symbols**');
+    expect(res.serializedContext).toContain('1. `CheckoutController.runCheckout`');
     expect(res.serializedContext).toContain('↓ calls');
-    expect(res.serializedContext).toContain('2. PaymentProcessor.charge');
+    expect(res.serializedContext).toContain('2. `PaymentProcessor.charge`');
     // Blast radius section lists what depends on each queried symbol.
-    expect(res.serializedContext).toContain('=== BLAST RADIUS (what depends on the queried symbols) ===');
+    expect(res.serializedContext).toContain('**Blast radius — what depends on these');
+    // Header states the query and the size of the result up front.
+    expect(res.serializedContext).toContain('**Exploration: runCheckout charge**');
+    expect(res.serializedContext).toMatch(/Found \d+ symbol\(s\) across \d+ file\(s\)\./);
   });
 
   test('explore_flow emits a low-confidence handoff when few query terms resolve', async () => {
@@ -465,6 +480,12 @@ class CheckoutController {
     // Mostly nonsense terms; at most one resolves, so the caller should be warned.
     const res = await controller.processPlan(compileExploreFlow({ query: 'charge zzznope quxbogus flarble' }));
     expect(res.status).toBe('success');
-    expect(res.serializedContext.startsWith('⚠ Low confidence:')).toBe(true);
+    // The warning is present but demoted to a footer note — it must not be the first
+    // thing the caller reads, or a warning on every good result trains them to skip it.
+    expect(res.serializedContext).toContain('⚠ Low confidence:');
+    expect(res.serializedContext.startsWith('**Exploration:')).toBe(true);
+    expect(res.serializedContext.indexOf('⚠ Low confidence:')).toBeGreaterThan(
+      res.serializedContext.indexOf('**Source Code**')
+    );
   });
 });

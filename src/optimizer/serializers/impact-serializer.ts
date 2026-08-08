@@ -1,6 +1,6 @@
 import { MaterializedEvidence } from '../../evidence/types.js';
 import { RepresentationLevel } from '../budget-allocator.js';
-import { getDisplayName, serializeNavigationPackage, formatResolutionConfidence, formatUnresolvedRefs, formatTestCoverage, formatConfidenceSummary } from './helper.js';
+import { getDisplayName, serializeSourceSection, formatResolutionConfidence, formatUnresolvedRefs, formatTestCoverage, formatConfidenceSummary } from './helper.js';
 
 export function serializeImpact(
   evidence: MaterializedEvidence,
@@ -17,21 +17,21 @@ export function serializeImpact(
     resolutionByEdgeKey.set(`${e.source}:${e.kind}`, e.resolutionMethod);
   });
 
-  let output = '=== DEPENDENCY IMPACT CONE ===\n\n';
+  let output = '**Changed symbol**\n\n';
 
   // 1. Root symbol (where change was made)
   if (rootNode) {
     const rootName = getDisplayName(rootNode, rootId);
-    output += `Changed Symbol: ${rootName} (${rootNode.kind})\n`;
-    output += `File: ${rootNode.file}\n`;
-    if (rootNode.signature) output += `Signature: ${rootNode.signature}\n`;
-    if (rootNode.docs) output += `Docs:\n${rootNode.docs.split('\n').map(l => '  ' + l).join('\n')}\n`;
+    const line = rootNode.range ? `:${rootNode.range.startLine}` : '';
+    output += `- \`${rootName}\` (${rootNode.kind} — ${rootNode.file}${line})\n`;
+    if (rootNode.signature) output += `  \`${rootNode.signature}\`\n`;
+    if (rootNode.docs) output += `${rootNode.docs.split('\n').map(l => '  > ' + l).join('\n')}\n`;
     output += formatUnresolvedRefs(rootNode);
     output += formatTestCoverage(rootNode);
   } else {
-    output += `Changed Symbol ID: ${rootId}\n`;
+    output += `- [ID: ${rootId}]\n`;
   }
-  output += '\n--------------------------------------------------\n\n';
+  output += '\n';
 
   if (affected.length === 0) {
     output += 'No downstream dependents or affected symbols were found.\n';
@@ -56,8 +56,8 @@ export function serializeImpact(
   const sortedDepths = Array.from(byDepth.keys()).sort((a, b) => a - b);
 
   sortedDepths.forEach(depth => {
-    const title = depth === 1 ? 'Direct Dependents (Depth 1):' : `Transitive Dependents (Depth ${depth}):`;
-    output += `${title}\n`;
+    const title = depth === 1 ? '**Direct dependents**' : `**Transitive dependents (depth ${depth})**`;
+    output += `${title}\n\n`;
 
     const items = byDepth.get(depth)!;
     items.forEach(item => {
@@ -65,8 +65,8 @@ export function serializeImpact(
       if (node) {
         const displayName = getDisplayName(node, item.nodeId);
         const resolutionMethod = resolutionByEdgeKey.get(`${item.nodeId}:${item.via}`);
-        output += `- ${displayName} (${node.kind}) [via: ${item.via}]${formatResolutionConfidence(resolutionMethod)}\n`;
-        output += `  File: ${node.file}\n`;
+        const line = node.range ? `:${node.range.startLine}` : '';
+        output += `- \`${displayName}\` (${node.kind} — ${node.file}${line}) [via: ${item.via}]${formatResolutionConfidence(resolutionMethod)}\n`;
         output += formatUnresolvedRefs(node);
         output += formatTestCoverage(node);
       } else {
@@ -76,8 +76,8 @@ export function serializeImpact(
     output += '\n';
   });
 
-  // 3. Recommended Code Ranges to Read Next (excluding rootId)
-  const spansOutput = serializeNavigationPackage(evidence.nodes, levels, [rootId]);
+  // 3. Verbatim source for the dependents (the root's own body isn't what's at risk)
+  const spansOutput = serializeSourceSection(evidence.nodes, levels, [rootId]);
   if (spansOutput) {
     output += spansOutput;
   }
