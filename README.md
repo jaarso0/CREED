@@ -25,20 +25,14 @@ It's a real static-analysis pipeline, not an LLM guessing from file names — an
 - **Live-Updating**: an `fs.watch`-based debounced rebuild keeps a running `mcp` server's graph in sync with the codebase without manual re-indexing.
 - **Interactive Visualizer**: a React Flow-based 2D graph explorer with flat/module/service/API/data views and execution-flow tracing.
 
-## Known Limitations
+## What it resolves
 
-Being upfront about where static analysis can't (yet) follow the code:
+`this.field.method()` chains resolve through the enclosing class, the field's declared type,
+interface members, imported types, and stdlib/dependency types — the last become explicit
+`external::` nodes, so a call into `Map` or `better-sqlite3` shows up as a real edge marking
+where your code meets its dependencies, instead of vanishing.
 
-- **Array-element types lose their container.** A field declared `Scope[]` resolves to `Scope`, so `this.items[0].method()` works but `this.items.push(...)` doesn't — `push` lives on `Array`, not the element type.
-- **Ambiguous type names resolve to nothing.** If two classes share a name and the referencing file doesn't import either, the resolver declines rather than guessing — a deliberate trade of recall for not emitting confidently-wrong edges.
-- **Dynamic dispatch via registries** (e.g. Python `HANDLERS[key](...)` where `key` is a runtime string) can't be resolved by static analysis at all — `trace_path`/`analyze_impact` will report no path even when a real dependency exists.
-- **Broad queries are slower on the SQLite backend.** A vague multi-word query that matches a large fraction of the corpus costs ~3.5x more than the in-memory index, because every match is marshalled into an object. Specific symbol lookups — what code navigation mostly is — go the other way, and stay flat as the repo grows (see below).
-- **Resolution is never incremental.** Only parsing is cached. A change in one file can invalidate references resolved in *other* files, so merge/registry/resolution always run over the whole project.
-Dynamic dispatch is documented in detail, with the reasoning and a proposed heuristic fix, in [deep_dive_architecture.md](deep_dive_architecture.md).
-
-`this.field.method()` chains **do** resolve — through the enclosing class, the field's declared
-type, interface members, imported types, and stdlib/dependency types (which become explicit
-`external::` symbols rather than being dropped).
+Coverage is tracked in [limitations.md](limitations.md).
 
 ---
 
@@ -175,9 +169,7 @@ memory. "Specific lookup" is a query naming a particular symbol:
 | 50k symbols | 19.1ms | **1.8ms** | 21.7 MB | ~0 |
 | 200k symbols | 94.6ms | **1.7ms** | 75.6 MB | ~0 |
 
-Specific lookups stay flat as the corpus grows; the in-memory path grows linearly. This is
-the tradeoff called out under [Known Limitations](#known-limitations) — broad, unselective
-queries go the other way.
+Specific lookups stay flat as the corpus grows, while the in-memory path grows linearly.
 
 ---
 
@@ -258,7 +250,7 @@ implement `ReadableGraph`, so downstream code doesn't change.
 - **[src/semantic-model/](src/semantic-model/)**: Core schema, builders, and merge logic.
 - **[src/storage/sqlite/](src/storage/sqlite/)**: Schema/migrations, row mapping, model persistence, and the per-file parse cache.
 
-For a deep dive into every stage's algorithms, data structures, and known resolver limitations, see **[deep_dive_architecture.md](deep_dive_architecture.md)**.
+For a deep dive into every stage's algorithms and data structures, see **[deep_dive_architecture.md](deep_dive_architecture.md)**. Coverage gaps are tracked in **[limitations.md](limitations.md)**.
 
 ---
 
