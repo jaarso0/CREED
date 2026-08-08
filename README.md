@@ -1,85 +1,93 @@
-# CREED - code intelligence
+# Creed
 
-**A knowledge graph of your codebase, exposed as an MCP server — so your AI coding agent stops re-deriving structure from grep and Read on every request.**
+**Stop paying your AI agent to rediscover your codebase on every single request.**
 
-Agents working on a codebase they don't already understand spend a huge share of their context budget on discovery: grepping for a symbol, reading the file it's in, grepping again for its callers, reading those files too. Creed does that analysis once — parsing with Tree-sitter, resolving imports/calls/inheritance across files, and indexing the result into SQLite — and then answers structural questions directly: *where is this defined, what calls it, what breaks if I change it, how does A reach B.* One tool call instead of a grep-and-read loop.
+[![npm](https://img.shields.io/npm/v/creed-kg.svg)](https://www.npmjs.com/package/creed-kg)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
-It's a real static-analysis pipeline, not an LLM guessing from file names — and it tells you when it's *not* sure, rather than presenting a best-effort guess as fact (see [Resolution Confidence](#resolution-confidence--trust-signals) below).
+Ask your agent "what breaks if I change this function?" and watch what happens: grep for the
+name, read the file, grep for callers, read those files, grep again for *their* callers.
+Half a dozen tool calls and thousands of tokens later, it has a partial answer — and it
+throws all of it away before your next question.
 
-## Why this over grep + Read?
+Creed does that analysis **once**. It parses your code with Tree-sitter, resolves imports,
+calls, inheritance and type usage across files, and indexes the whole thing into SQLite.
+Then your agent just asks:
 
-- **Fewer round trips.** `explore_flow` returns the anchor's signature, docs, blast radius, every relationship with exact callsites, and the verbatim line-numbered source — in one call.
-- **It resolves across files.** Imports, class inheritance, and (as of this build) instance-method calls through local variables are followed automatically — you get the actual callee, not just a name match.
-- **It tells you what it doesn't know.** Every edge is tagged with how confidently it was resolved (`resolved-via: scope/import` vs `⚠ low-confidence: name-only match`), and nodes flag their own unresolved references. A confidently-empty result and a "we couldn't tell" result look different — which matters, because [that distinction found two real resolver bugs during this project's own development](deep_dive_architecture.md#resolver-correctness-history-relevant-to-trusting-analyze_impacttrace_path).
-- **It stays current.** A file watcher debounces changes and rebuilds automatically — no manual re-index step in the loop.
+> *what breaks if I change `hashSource`?*
 
-## Core Features
+and gets the answer in **one call**, with the callers, the exact call sites, and the source
+already attached.
 
-- **Multi-Language**: TypeScript, TSX, JavaScript, JSX, Python, Java, and HTML — via native Tree-sitter grammars.
-- **Cross-File Reference Resolution**: two-phase resolution (imports first, then lexical scope/instance-type/fallback) links calls, instantiations, inheritance, and type usage to their actual declarations — not just name matches.
-- **Framework-Aware**: pluggable adapters detect FastAPI/Flask/NestJS/Express API routes, ORM data models, and service classes, and attach that context directly to the graph.
-- **Agent-Ready MCP Server**: six tools (`explore_flow`, `search_symbols`, `explore_region`, `trace_path`, `analyze_impact`, `query_graph`) exposed over JSON-RPC/stdio for any MCP-compatible client (Claude Code, Cursor, etc.).
-- **Confidence-Tagged Output**: every returned edge is labeled with its resolution method, and nodes surface their own unresolved references — see below.
-- **SQLite-Backed Index**: the graph lives in `.masai/graph.db`, served through real indexes (including an FTS5 trigram index for substring symbol search) rather than held entirely in memory — so resident memory tracks what a query touches, not the size of the repo.
-- **Incremental Re-Indexing**: each file's parse output is cached and keyed by a content hash, so a rebuild only re-parses what changed.
-- **Live-Updating**: an `fs.watch`-based debounced rebuild keeps a running `mcp` server's graph in sync with the codebase without manual re-indexing.
-- **Interactive Visualizer**: a React Flow-based 2D graph explorer with flat/module/service/API/data views and execution-flow tracing.
-
-## What it resolves
-
-`this.field.method()` chains resolve through the enclosing class, the field's declared type,
-interface members, imported types, and stdlib/dependency types — the last become explicit
-`external::` nodes, so a call into `Map` or `better-sqlite3` shows up as a real edge marking
-where your code meets its dependencies, instead of vanishing.
-
-Coverage is tracked in [limitations.md](limitations.md).
+```bash
+npm install -D creed-kg
+```
 
 ---
 
-## Quick Start: MCP Server
+## Try it on your own code, right now
 
-This is the primary way to use Creed — as a tool provider for your AI coding agent.
+No editor setup, no config file. Install it and ask a question:
 
-**1. Build it:**
 ```bash
-npm install
-npm run build
+npm install -D creed-kg
+npx creed-kg query "how does authentication work"
 ```
 
-**2. Register it** in your MCP client's config (e.g. `.mcp.json` for Claude Code):
+Creed indexes your project on the spot and prints the answer — the symbols involved, what
+depends on them, the call sites, and the source. Ask it anything: a function name, a file
+name, a half-remembered phrase, or all three mixed together.
+
+```bash
+npx creed-kg query "UserService save"
+npx creed-kg query "what happens when a payment fails"
+npx creed-kg query "src/auth login token refresh"
+```
+
+That's the same engine your agent gets — you're just reading it yourself.
+
+---
+
+## Wire it into your editor
+
+Creed speaks standard MCP over stdio, so it works in **Claude Code, Claude Desktop, Cursor,
+Antigravity, Kiro, Windsurf, VS Code** — anything that speaks the protocol.
+
+**It's the same block everywhere.** Only the file it goes in changes:
+
 ```json
 {
   "mcpServers": {
     "creed": {
-      "command": "node",
-      "args": ["<path-to-creed>/dist/index.js", "mcp", "<path-to-your-target-project>"]
+      "command": "npx",
+      "args": ["creed-kg", "mcp", "."]
     }
   }
 }
 ```
 
-For Claude Desktop, `node dist/index.js setup` writes this entry for you after prompting
-for the directory to index.
-
-On first connect it builds a full semantic model, writes it to `.masai/graph.db`, and starts watching the target project for changes.
-
-### The Six Tools
-
-| Tool | Use it to ask... |
+| Editor | Where it goes |
 | :--- | :--- |
-| `explore_flow` | **Start here.** One free-form query mixing symbol names, file names and plain English — resolves the meaningful terms, traverses from all of them, and returns how they connect |
-| `search_symbols` | "Where is `X` defined?" — resolve a name/kind to concrete node(s) |
-| `explore_region` | "What does `X` connect to?" — BFS neighborhood, both directions |
-| `trace_path` | "How does A reach B?" — shortest dependency/call path between two anchors |
-| `analyze_impact` | "What breaks if I change `X`?" — bounded upstream dependency cone |
-| `query_graph` | Escape hatch — run a raw `GraphQueryPlan` directly |
+| **Claude Code** | `.mcp.json` in your project root — or just run `claude mcp add creed -- npx creed-kg mcp .` |
+| **Claude Desktop** | `claude_desktop_config.json` — run **`npx creed-kg setup`** and it writes the file for you |
+| **Cursor** | `.cursor/mcp.json` (this project) or `~/.cursor/mcp.json` (everywhere) |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` |
+| **Kiro** | `.kiro/settings/mcp.json` (workspace) or `~/.kiro/settings/mcp.json` (user) |
+| **Antigravity** | Add it from the editor's MCP settings panel — same block |
+| **VS Code / Copilot** | `.vscode/mcp.json` — note VS Code names the key `servers`, not `mcpServers` |
 
-### What the tools return
+Restart the editor and your agent has the six tools below.
 
-Markdown, not JSON: a blast-radius summary, the anchors with their signatures and doc
-comments, every relationship with its exact callsite, then the verbatim **line-numbered**
-source grouped by file — so a caller can cite `file.ts:42` from what it was handed
-instead of reopening the file to find out where anything lives.
+`npx creed-kg mcp .` indexes on first connect and then keeps itself current — a file watcher
+rebuilds as you edit, re-parsing only what actually changed. There is no re-index command to
+remember.
+
+---
+
+## What your agent actually receives
+
+Not a JSON blob it has to decode — formatted markdown with the code already in it:
 
 ````
 **Exploration: SqlitePartialCache hashSource**
@@ -95,13 +103,8 @@ Found 19 symbol(s) across 5 file(s).
 
 - `Pipeline.build` --[call]--> `hashSource` [resolved-via: import]
   src/pipeline.ts:60 → `const contentHash = hashSource(file.sourceCode);`
-- `ParserRegistry.getParser` [⚠ low-confidence: name-only match]
-  ⚠ 3 unresolved reference(s) from here: this.parsers.get, this.getLanguageObject
 
 **Source Code**
-
-> The code below is the verbatim, current on-disk source of these symbols, line-numbered.
-> Treat it as a Read you have already performed — no need to reopen these files.
 
 **`src/storage/sqlite/partial-cache.ts`** — hashSource(function), SqlitePartialCache(class)
 
@@ -112,151 +115,167 @@ Found 19 symbol(s) across 5 file(s).
 ```
 ````
 
-Output self-caps to a token budget (8,000 by default, hard-stopped at 40k characters), so
-a broad query on a well-connected symbol degrades gracefully instead of failing. Anything
-dropped is reported in a footer note rather than silently omitted.
+Three things worth noticing:
 
-### Resolution Confidence & Trust Signals
+**The blast radius comes first.** Before touching anything, your agent knows what depends on
+it and where those callers live.
 
-Output isn't just "here's an edge" — it tells you how sure it is.
-`resolved-via: import/scope/qualified_name` means the resolver is confident.
-`⚠ low-confidence: name-only match` means it fell back to a best-effort name guess — treat
-those edges with real skepticism. The unresolved-references line tells you what the graph
-knows it *couldn't* figure out near a symbol, so an empty result reads differently
-depending on whether it's clean or full of unresolved warnings.
+**Every relationship carries its call site** — the file, the line, and the actual line of
+code. No follow-up reads to find out *where* the call happens.
+
+**The source is line-numbered.** Your agent can cite `partial-cache.ts:24` from what it was
+handed, instead of reopening the file to work out where anything sits.
 
 ---
 
-## Quick Start: CLI Analysis Pipeline
+## Six tools, one you'll use most
 
-Build a semantic model and print a diagnostic report without starting the MCP server.
+| Tool | Ask it |
+| :--- | :--- |
+| **`explore_flow`** | **Start here.** Throw a free-form query at it — symbol names, file names, plain English, mixed together. It figures out which terms are real, traverses from all of them, and shows how they connect. |
+| `search_symbols` | "Where is `X` defined?" |
+| `explore_region` | "What does `X` connect to?" |
+| `trace_path` | "How does A reach B?" |
+| `analyze_impact` | "What breaks if I change `X`?" |
+| `query_graph` | Escape hatch for a raw query plan. |
 
-```bash
-# Development (JIT via tsx)
-npm run dev -- <path-to-target-project>
+Most sessions never need more than `explore_flow` — it replaces the
+search → copy-an-ID → explore round-trip with a single call.
 
-# Production
-npm run build
-node dist/index.js <path-to-target-project>
+---
+
+## It tells you when it isn't sure
+
+This is a real static-analysis pipeline, not a language model guessing from file names. And
+where it *can't* be certain, it says so instead of presenting a guess as fact:
+
+```
+- Pipeline.build --[call]--> hashSource        [resolved-via: import]
+- ParserRegistry.getParser                     [⚠ low-confidence: name-only match]
+  ⚠ 3 unresolved reference(s) from here: this.parsers.get, this.getLanguageObject
 ```
 
-Persists the model to `<path-to-target-project>/.masai/graph.db` — a normalized, indexed
-SQLite database. You can query it directly:
+Every edge is labelled with **how** it was resolved. `resolved-via: import/scope` means the
+resolver followed a real link. `⚠ low-confidence` means it fell back to matching a name and
+you should treat it with suspicion.
+
+That distinction is the difference between "nothing depends on this" and "I couldn't tell" —
+two answers that look identical in every grep-based workflow, and lead to very different
+decisions. It's also how two real resolver bugs got caught during Creed's own development.
+
+---
+
+## Built for codebases that are actually large
+
+The index lives in SQLite, not in memory. Lookups go through real indexes — including an
+FTS5 trigram index for substring search — so finding a symbol costs the same whether your
+project has ten thousand symbols or two hundred thousand:
+
+| Your codebase | Symbol lookup | Memory used |
+| :--- | :--- | :--- |
+| 10k symbols | 0.7 ms | ~0 |
+| 50k symbols | 1.8 ms | ~0 |
+| 200k symbols | **1.7 ms** | **~0** |
+
+*(An in-memory graph answers the same 200k-symbol lookup in 94.6 ms and holds 75.6 MB of
+heap to do it.)*
+
+**Re-indexing is close to free.** Every file's parse output is cached and keyed by a content
+hash, so a rebuild only touches what changed:
+
+| | Time |
+| :--- | :--- |
+| First index (110 files) | 3.97s |
+| Rebuild, nothing changed | **0.15s** |
+| Rebuild, one file edited | **0.16s** |
+
+Which is why staleness never becomes your problem — it's cheap enough to just always be
+current.
+
+---
+
+## Languages and frameworks
+
+**TypeScript · TSX · JavaScript · JSX · Python · Java · HTML**, via native Tree-sitter
+grammars.
+
+Creed also recognises what your code *means*, not just its shape: adapters detect
+**FastAPI, Flask, NestJS and Express** routes, ORM data models, and service classes, and
+attach that straight to the graph. So `explore_flow "POST /login"` resolves to the handler.
+
+Cross-file resolution follows imports, class inheritance, instance-method calls through
+local variables, and `this.field.method()` chains — through the field's declared type,
+interface members, imported types, and even standard-library and dependency types, which
+become explicit nodes marking exactly where your code meets its dependencies.
+
+---
+
+## See it, too
+
+```bash
+npx creed-kg serve .
+```
+
+Opens an interactive 2D graph explorer in your browser — flat, module, service, API and data
+views, a details inspector, and execution-flow tracing. Ships prebuilt; nothing to compile.
+
+---
+
+## Every command
+
+| Command | What it does |
+| :--- | :--- |
+| `npx creed-kg query "<question>"` | Ask about your codebase and print the answer |
+| `npx creed-kg mcp .` | Run as an MCP server for your editor |
+| `npx creed-kg .` | Index and print a report |
+| `npx creed-kg serve .` | Open the visual explorer |
+| `npx creed-kg setup` | Write the Claude Desktop config for you |
+
+Add `--path <dir>` to `query` to point it at a project other than the current directory.
+
+The index is a normal SQLite database at `.masai/graph.db` — query it however you like:
 
 ```bash
 sqlite3 .masai/graph.db "SELECT name, kind, file_path FROM symbols WHERE name_lower = 'userservice';"
 ```
 
-Each file's parse output is cached in the database and keyed by a content hash, so
-re-indexing only re-parses what changed. Set `MASAI_NO_CACHE=1` to force a full re-parse.
-
-### Index performance
-
-Measured on this repo (110 files, 791 symbols):
-
-| Build | Time |
-| :--- | :--- |
-| cold, no cache | 3.97s |
-| rebuild, nothing changed | 0.15s |
-| rebuild, one file changed | 0.16s (1 parsed, 109 reused) |
-
-And on synthetic corpora, comparing the SQLite backend against holding the whole graph in
-memory. "Specific lookup" is a query naming a particular symbol:
-
-| Corpus | Lookup (in-memory) | Lookup (sqlite) | Memory (in-memory) | Memory (sqlite) |
-| :--- | :--- | :--- | :--- | :--- |
-| 10k symbols | 2.9ms | **0.7ms** | 5.6 MB | ~0 |
-| 50k symbols | 19.1ms | **1.8ms** | 21.7 MB | ~0 |
-| 200k symbols | 94.6ms | **1.7ms** | 75.6 MB | ~0 |
-
-Specific lookups stay flat as the corpus grows, while the in-memory path grows linearly.
-
----
-
-## Quick Start: Interactive Visualizer
-
-A web-based 2D node-link graph explorer with a details inspector, flat/module/service/API/data view modes, and execution-flow tracing.
-
-```bash
-# Build the frontend once
-cd visualizer && npm install && npm run build && cd ..
-
-# Serve it
-npm run serve -- <path-to-target-project>
-```
-Opens `http://localhost:3000` (or the next available port) automatically.
-
-For frontend development with hot reload, run `npm run serve -- <path>` in one terminal and `cd visualizer && npm run dev` in another — the Vite dev server at `:5173` proxies API requests to the backend.
-
----
-
-## Programmatic API Usage
+Or drive the pipeline directly:
 
 ```typescript
-import { Pipeline } from './src/pipeline.ts';
-import { SqliteSemanticModelStorage } from './src/storage/sqlite/sqlite-model-storage.ts';
-import { SqlitePartialCache } from './src/storage/sqlite/partial-cache.ts';
-import { SqliteKnowledgeGraph } from './src/graph/sqlite-graph.ts';
+import { Pipeline, SqliteSemanticModelStorage, SqliteKnowledgeGraph } from 'creed-kg';
 
-async function main() {
-  const projectPath = './my-target-project';
-  const pipeline = new Pipeline();
+const project = './my-project';
 
-  // Reuse cached parse output for files whose contents haven't changed.
-  const cache = new SqlitePartialCache(projectPath);
-  const { model, fileRecords, stats } = await pipeline.build(projectPath, { cache });
-  cache.close();
+// Index it (fileRecords carry the parse cache, so the next build starts warm)
+const { model, fileRecords } = await new Pipeline().build(project);
+await new SqliteSemanticModelStorage().save(model, project, fileRecords);
 
-  console.log(`Files: ${model.fileCount} (${stats.parsed} parsed, ${stats.reused} cached)`);
-  console.log(`Symbols: ${model.symbolCount}, refs: ${model.resolvedReferences.length}`);
-
-  // Persist, passing fileRecords so the next build starts warm.
-  await new SqliteSemanticModelStorage().save(model, projectPath, fileRecords);
-
-  // Query from disk — bounded memory, indexed lookups.
-  const graph = new SqliteKnowledgeGraph(projectPath);
-  try {
-    const callers = graph.getCallersOf('src/auth.ts::login');
-    console.log('Callers of login():', callers.map(node => node.id));
-
-    const localGraph = graph.getNeighborhood('src/auth.ts::login', 2);
-    console.log(`Neighborhood size: ${localGraph.stats().nodes} nodes`);
-  } finally {
-    graph.close();
-  }
-}
-
-main();
+// Query it — indexed lookups, bounded memory
+const graph = new SqliteKnowledgeGraph(project);
+console.log(graph.getCallersOf('src/auth.ts::login').map(n => n.id));
+graph.close();
 ```
 
-`pipeline.buildFull(projectPath)` remains as a one-liner that returns just the model, with
-no cache. For an in-memory graph instead, use `pipeline.deriveGraph(model)` — both
-implement `ReadableGraph`, so downstream code doesn't change.
+---
+
+## Good to know
+
+- **Node 22+** required.
+- Add **`.masai/`** to your `.gitignore` — it's a derived cache, rebuildable from source at
+  any time.
+- `MASAI_NO_CACHE=1` forces a full re-parse if you ever want one.
 
 ---
 
-## Codebase Architecture
-
-- **[src/index.ts](src/index.ts)**: CLI entry point (`mcp`, `serve`, or default analysis mode) and library exports.
-- **[src/pipeline.ts](src/pipeline.ts)**: Orchestrates parse → extract → merge → index → resolve → graph.
-- **[src/parse/](src/parse/)**: Walks the workspace and builds Tree-sitter ASTs. `walkProject` (discover + read) is split from `parseSourceFile` so unchanged files can skip parsing.
-- **[src/extract/](src/extract/)**: S-expression queries → normalized symbols/scopes/references. Framework adapters (`src/frameworks/`) run here too.
-- **[src/registry/](src/registry/)**: Indexed symbol/scope lookup tables.
-- **[src/resolve/](src/resolve/)**: Two-phase reference resolution (imports, then lexical scope + instance-type + fallback).
-- **[src/graph/](src/graph/)**: The queryable graph. Consumers depend on the `ReadableGraph` interface, implemented by both the in-memory `KnowledgeGraph` and the SQLite-backed `SqliteKnowledgeGraph`.
-- **[src/retrieval/](src/retrieval/)**: Symbol lookup and candidate discovery behind the `SymbolIndex` interface — in-memory (`RetrievalIndexes`) or SQLite/FTS5 (`SqliteSymbolIndex`).
-- **[src/mcp/](src/mcp/), [src/resolution/](src/resolution/), [src/executor/](src/executor/), [src/evidence/](src/evidence/), [src/optimizer/](src/optimizer/)**: The MCP server stack — anchor resolution, graph algorithms, source materialization, token-budget allocation, and markdown serialization.
-- **[src/watcher.ts](src/watcher.ts)**: Debounced auto-rebuild for a running `mcp` server.
-- **[src/semantic-model/](src/semantic-model/)**: Core schema, builders, and merge logic.
-- **[src/storage/sqlite/](src/storage/sqlite/)**: Schema/migrations, row mapping, model persistence, and the per-file parse cache.
-
-For a deep dive into every stage's algorithms and data structures, see **[deep_dive_architecture.md](deep_dive_architecture.md)**. Coverage gaps are tracked in **[limitations.md](limitations.md)**.
-
----
-
-## Running Tests
+## Contributing
 
 ```bash
-npm test          # run once
-npm run test:watch # watch mode
+git clone https://github.com/jaarso0/MASAI-KG.git
+npm install
+npm test
 ```
+
+[**Architecture**](architecture.md) · [**Deep dive**](deep_dive_architecture.md) ·
+[**Coverage notes**](limitations.md)
+
+MIT licensed.
