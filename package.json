@@ -1,18 +1,52 @@
 {
-  "name": "masai-kg",
+  "name": "creed-kg",
   "version": "1.0.0",
-  "description": "MASAI Knowledge Graph Pipeline",
+  "description": "A knowledge graph of your codebase, exposed as an MCP server — so AI coding agents stop re-deriving structure from grep and Read on every request.",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "code-intelligence",
+    "knowledge-graph",
+    "static-analysis",
+    "tree-sitter",
+    "code-navigation",
+    "ai-agent",
+    "claude",
+    "llm-context"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/jaarso0/MASAI-KG#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jaarso0/MASAI-KG.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jaarso0/MASAI-KG/issues"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "bin": {
+    "creed-kg": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "visualizer/dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsup src/index.ts --format esm --dts",
+    "build": "tsup src/index.ts --format esm --dts --clean",
     "serve": "tsx src/index.ts serve",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "tree-sitter": "^0.21.1",
     "tree-sitter-html": "^0.23.2",
     "tree-sitter-java": "^0.23.5",
@@ -21,6 +55,7 @@
     "tree-sitter-typescript": "^0.21.2"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^20.11.0",
     "tsup": "^8.0.1",
     "tsx": "^4.7.0",
