@@ -7,19 +7,40 @@ import { SqlitePartialCache } from './storage/sqlite/partial-cache.js';
 
 import * as os from 'os';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
+
+const CLI_VERSION = '1.0.0';
 import * as readline from 'readline';
 import { startServer } from './serve.js';
 
 // Export everything for programmatic use
+// Pipeline
 export { Pipeline } from './pipeline.js';
-export { JsonSemanticModelStorage } from './storage/semantic-model-storage.js';
-export { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
-export { openDatabase, getDatabasePath, databaseExists } from './storage/sqlite/db.js';
+export type { BuildResult, BuildOptions } from './pipeline.js';
 export * from './semantic-model/types.js';
-export { KnowledgeGraph } from './graph/graph.js';
-export { startServer } from './serve.js';
+
+// Graph — both backends implement ReadableGraph, so consumers can swap freely
+export { KnowledgeGraph, buildGraphFromModel, isTestFile } from './graph/graph.js';
+export type { ReadableGraph, KGNode, KGEdge, KGEdgeKind } from './graph/graph.js';
+export { SqliteKnowledgeGraph } from './graph/sqlite-graph.js';
+
+// Storage & incremental parse cache
+export { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
+export { SqlitePartialCache, hashSource } from './storage/sqlite/partial-cache.js';
+export type { FileRecord, PartialCache } from './storage/sqlite/partial-cache.js';
+export { openDatabase, getDatabasePath, databaseExists } from './storage/sqlite/db.js';
+export { SCHEMA_VERSION, PIPELINE_VERSION } from './storage/sqlite/schema.js';
+export { JsonSemanticModelStorage } from './storage/semantic-model-storage.js';
+
+// Retrieval / symbol lookup
 export { RetrievalEngine } from './retrieval/api.js';
+export { RetrievalIndexes } from './retrieval/indexes.js';
+export { SqliteSymbolIndex } from './retrieval/sqlite-symbol-index.js';
+export type { SymbolIndex, SymbolMatch, FilePathMatch } from './retrieval/symbol-index.js';
 export * from './retrieval/types.js';
+
+// Servers
+export { startServer } from './serve.js';
 
 async function runSetup() {
   const rl = readline.createInterface({
@@ -86,13 +107,108 @@ async function runSetup() {
   }
 }
 
+function printUsage(): void {
+  console.log(`
+Creed — a knowledge graph of your codebase, for AI coding agents.
+
+Usage: creed-kg <command> [options]
+
+Commands:
+  query "<question>"     Ask about your codebase and print the answer
+  mcp [dir]              Run as an MCP server (for Claude Code, Cursor, Kiro, ...)
+  serve [dir]            Open the interactive graph explorer in a browser
+  setup                  Write the Claude Desktop MCP config for you
+  [dir]                  Index a directory and print a report (default)
+
+Options:
+  --path, -p <dir>       Project directory for \`query\` (default: current directory)
+  --help, -h             Show this message
+
+Examples:
+  creed-kg query "how does authentication work"
+  creed-kg query "UserService save" --path ./backend
+  creed-kg mcp .
+  creed-kg .
+`);
+}
+
 // CLI Execution Support
 async function runCLI() {
   const args = process.argv.slice(2);
   const command = args[0];
 
+  if (command === 'help' || command === '--help' || command === '-h') {
+    printUsage();
+    return;
+  }
+
+  if (command === '--version' || command === '-v') {
+    console.log(CLI_VERSION);
+    return;
+  }
+
   if (command === 'setup' || command === 'configure') {
     await runSetup();
+    return;
+  }
+
+  if (command === 'query' || command === 'ask') {
+    // One-shot version of the `explore_flow` MCP tool, so the graph is usable straight after
+    // install without wiring up an editor first. Indexes (reusing the cache, so it's near
+    // instant on a warm project), runs the query, prints the same markdown an agent receives.
+    const rest = args.slice(1);
+    let targetDir = process.cwd();
+    const pathFlag = rest.findIndex(a => a === '--path' || a === '-p');
+    if (pathFlag !== -1) {
+      targetDir = path.resolve(rest[pathFlag + 1] || '.');
+      rest.splice(pathFlag, 2);
+    }
+    const queryText = rest.join(' ').trim();
+
+    if (!queryText) {
+      console.error('Usage: creed-kg query "<what you want to know>" [--path <dir>]');
+      console.error('Example: creed-kg query "how does authentication work"');
+      process.exit(1);
+    }
+
+    try {
+      const pipeline = new Pipeline();
+      const cache = new SqlitePartialCache(targetDir);
+      let build;
+      try {
+        build = await pipeline.build(targetDir, { cache });
+      } finally {
+        cache.close();
+      }
+      await new SqliteSemanticModelStorage().save(build.model, targetDir, build.fileRecords);
+
+      const { SqliteKnowledgeGraph } = await import('./graph/sqlite-graph.js');
+      const { SqliteSymbolIndex } = await import('./retrieval/sqlite-symbol-index.js');
+      const { RequestController } = await import('./mcp/controller.js');
+      const { compileExploreFlow } = await import('./mcp/compile.js');
+
+      const graph = new SqliteKnowledgeGraph(targetDir);
+      const index = new SqliteSymbolIndex(targetDir);
+      try {
+        const controller = new RequestController(graph, targetDir, index);
+        const result = await controller.processPlan(compileExploreFlow({ query: queryText }));
+
+        if (typeof result?.serializedContext === 'string') {
+          console.log(result.serializedContext);
+        } else if (result?.status === 'not_found') {
+          console.log(`No symbols matched "${queryText}".`);
+          console.log('Try naming a specific function, class, or file.');
+        } else {
+          console.log(JSON.stringify(result, null, 2));
+        }
+      } finally {
+        graph.close();
+        index.close();
+      }
+    } catch (err: any) {
+      console.error(`\n❌ Query failed:`, err.message || err);
+      process.exit(1);
+    }
     return;
   }
 
@@ -170,10 +286,20 @@ async function runCLI() {
     return;
   }
 
+  // Anything left is the default "index this directory" mode, where args[0] is a path.
+  // Guard it: a mistyped or unsupported subcommand used to be resolved as a directory name,
+  // so `creed-kg quer "..."` reported `ENOENT: no such file or directory .../quer` — which
+  // points at the wrong problem entirely. If it doesn't exist on disk, treat it as a command.
+  if (args[0] && !fsSync.existsSync(path.resolve(args[0]))) {
+    console.error(`Unknown command or missing directory: "${args[0]}"\n`);
+    printUsage();
+    process.exit(1);
+  }
+
   const targetDir = args[0] ? path.resolve(args[0]) : process.cwd();
 
   console.log(`\n==================================================`);
-  console.log(` MASAI Knowledge Graph Builder v1.0.0`);
+  console.log(` Creed — Knowledge Graph Builder`);
   console.log(`==================================================`);
   console.log(`Target Directory : ${targetDir}`);
   console.log(`Starting analysis...\n`);

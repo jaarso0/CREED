@@ -38,7 +38,7 @@ export class MCPServer {
   }
 
   public start(): void {
-    console.error('MASAI-KG MCP Server starting on stdio...');
+    console.error('creed-kg MCP server starting on stdio...');
 
     const rl = readline.createInterface({
       input: process.stdin,
@@ -91,7 +91,7 @@ export class MCPServer {
             tools: {}
           },
           serverInfo: {
-            name: 'masai-kg-mcp',
+            name: 'creed-kg',
             version: '1.0.0'
           }
         });

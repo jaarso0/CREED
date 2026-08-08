@@ -14,6 +14,29 @@ export const DEFINITION_KINDS = new Set([
   'class', 'interface', 'struct', 'function', 'method', 'type_alias', 'enum'
 ]);
 
+/**
+ * English suffixes stripped when a literal search term matches nothing, longest first so the
+ * biggest one wins ("orchestration" → "orchestr", not "orchestrat" + a dangling "ion").
+ * Deliberately crude — a real stemmer would be overkill, and this only ever runs as a
+ * fallback, so an over-eager stem costs a few extra candidates rather than wrong answers.
+ */
+const STEM_SUFFIXES = [
+  'ational', 'ations', 'ation', 'ition', 'ings', 'ings', 'ing', 'ment', 'ness',
+  'ities', 'ity', 'ers', 'er', 'ors', 'or', 'ies', 'es', 'ed', 'ly', 's'
+];
+
+/** The stem of a term, or null when there's nothing safe to strip. */
+export function stemToken(token: string): string | null {
+  for (const suffix of STEM_SUFFIXES) {
+    // Keep at least 4 characters, or "class" → "clas" and "series" → "ser" start matching
+    // everything. A 4-char stem is still selective enough to be useful.
+    if (token.endsWith(suffix) && token.length - suffix.length >= 4) {
+      return token.slice(0, token.length - suffix.length);
+    }
+  }
+  return null;
+}
+
 export class CandidateDiscovery {
   private indexes: SymbolIndex;
   // Common English + generic programming words that are noise as query terms — filtered out
@@ -66,25 +89,22 @@ export class CandidateDiscovery {
     // strings and ordering are unchanged — only how the matches are found differs.
     for (const token of tokens) {
       const tokLower = token.toLowerCase();
+      const hits = this.scoreToken(candidates, token, tokLower, '');
 
-      const serviceNode = this.indexes.getService(token);
-      if (serviceNode) {
-        this.addOrScore(candidates, serviceNode, 10, `Exact Service Name Match: ${token}`, tokLower);
-      }
-
-      for (const { node: n, exact } of this.indexes.matchByName(tokLower)) {
-        if (exact) this.addOrScore(candidates, n, 8, `Exact Symbol Name Match: ${n.name}`, tokLower);
-        else this.addOrScore(candidates, n, 4, `Substring Symbol Name Match: ${n.name}`, tokLower);
-      }
-
-      for (const { node: n, exact } of this.indexes.matchByQualifiedName(tokLower)) {
-        if (exact) this.addOrScore(candidates, n, 6, `Exact Qualified Name Match: ${n.qualifiedName}`, tokLower);
-        else this.addOrScore(candidates, n, 3, `Substring Qualified Name Match: ${n.qualifiedName}`, tokLower);
-      }
-
-      for (const { node: n, filePath } of this.indexes.matchByFilePath(tokLower)) {
-        const mult = (n.kind === 'class' || n.kind === 'function') ? 5 : 2;
-        this.addOrScore(candidates, n, mult, `File Path Match: ${filePath}`, tokLower);
+      // Nothing matched this token literally. People ask in English — "how does
+      // orchestration work" — while the code says `orchestrator`, and "orchestration"
+      // is not a substring of "orchestrator", so the whole query returned nothing.
+      // Retry on the stem.
+      //
+      // Scored at full weight on purpose. Discounting it seems safer but isn't: the
+      // re-ranking below adds *additive* bonuses (co-location, brevity), so scaling the
+      // base scores down lets those constants compress the gap between the top two
+      // candidates — which pushes the result under resolveAll's 1.25x dominance ratio and
+      // gets the whole term dropped as "ambiguous". And there is nothing to lose a
+      // tie-break against anyway: this only runs when the literal token matched nothing.
+      if (hits === 0) {
+        const stem = stemToken(tokLower);
+        if (stem) this.scoreToken(candidates, stem, stem, ' (stem)');
       }
     }
 
@@ -125,6 +145,46 @@ export class CandidateDiscovery {
     }).sort((a, b) => b.score - a.score);
 
     return scored.slice(0, limit);
+  }
+
+  /**
+   * Scores every match for one search term. `note` is appended to the match reasons so the
+   * output shows *why* something matched. Returns how many matches it found, so the caller
+   * can tell a term that landed from one that didn't.
+   */
+  private scoreToken(
+    candidates: Map<string, Candidate>,
+    rawToken: string,
+    tokLower: string,
+    note: string
+  ): number {
+    let hits = 0;
+
+    const serviceNode = this.indexes.getService(rawToken);
+    if (serviceNode) {
+      this.addOrScore(candidates, serviceNode, 10, `Exact Service Name Match: ${rawToken}${note}`, tokLower);
+      hits++;
+    }
+
+    for (const { node: n, exact } of this.indexes.matchByName(tokLower)) {
+      if (exact) this.addOrScore(candidates, n, 8, `Exact Symbol Name Match: ${n.name}${note}`, tokLower);
+      else this.addOrScore(candidates, n, 4, `Substring Symbol Name Match: ${n.name}${note}`, tokLower);
+      hits++;
+    }
+
+    for (const { node: n, exact } of this.indexes.matchByQualifiedName(tokLower)) {
+      if (exact) this.addOrScore(candidates, n, 6, `Exact Qualified Name Match: ${n.qualifiedName}${note}`, tokLower);
+      else this.addOrScore(candidates, n, 3, `Substring Qualified Name Match: ${n.qualifiedName}${note}`, tokLower);
+      hits++;
+    }
+
+    for (const { node: n, filePath } of this.indexes.matchByFilePath(tokLower)) {
+      const mult = (n.kind === 'class' || n.kind === 'function') ? 5 : 2;
+      this.addOrScore(candidates, n, mult, `File Path Match: ${filePath}${note}`, tokLower);
+      hits++;
+    }
+
+    return hits;
   }
 
   private tokenize(query: string): string[] {

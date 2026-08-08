@@ -33,6 +33,16 @@ export function openDatabase(projectRoot: string, options: OpenOptions = {}): Da
   const dbPath = getDatabasePath(projectRoot);
 
   if (options.readonly) {
+    // Check first and fail with something actionable. better-sqlite3's own message here is
+    // "Cannot open database because the directory does not exist", which says nothing about
+    // needing to index the project — and this is the very first thing a new consumer hits.
+    if (!fs.existsSync(dbPath)) {
+      throw new Error(
+        `No Creed index found at ${dbPath}. ` +
+        `Index the project first — run \`npx creed-kg ${projectRoot}\`, or build and save a ` +
+        `model with Pipeline.build() + SqliteSemanticModelStorage.save().`
+      );
+    }
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
     return db;
   }

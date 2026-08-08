@@ -488,4 +488,30 @@ class CheckoutController {
       res.serializedContext.indexOf('**Source Code**')
     );
   });
+
+  test('a lone ambiguous term still returns its best candidate instead of "not found"', async () => {
+    const controller = new RequestController(graph, TEMP_MCP_TEST_DIR);
+
+    // A single broad term that matches several symbols comparably. Dropping ambiguous terms
+    // is right only while another anchor survives; as the last one standing it used to
+    // produce `not_found` — reporting "no symbols matched" for a query that matched plenty.
+    const res = await controller.processPlan(compileExploreFlow({ query: 'checkout' }));
+
+    expect(res.status).toBe('success');
+    expect(res.status).not.toBe('not_found');
+    expect(res.serializedContext).toContain('**Exploration: checkout**');
+    // The pick is surfaced as a best guess, with the alternatives listed, so a wrong
+    // guess is visible and correctable rather than silent.
+    expect(res.serializedContext).toContain('Auto-resolved');
+  });
+
+  test('a genuinely unmatched query still reports not_found', async () => {
+    const controller = new RequestController(graph, TEMP_MCP_TEST_DIR);
+    // Reinstating the best candidate must not mean "always return something" — when
+    // nothing matched at all there is no candidate to reinstate.
+    const res = await controller.processPlan(
+      compileExploreFlow({ query: 'zzznope quxbogus flarble' })
+    );
+    expect(res.status).toBe('not_found');
+  });
 });

@@ -194,6 +194,9 @@ export class AnchorResolver {
     const ambiguousAnchors: Array<{ query: string; candidates: AnchorCandidate[] }> = [];
     const missingQueries: string[] = [];
     const disambiguations: Disambiguation[] = [];
+    // Terms dropped for being ambiguous, kept so they can be reinstated if it turns out
+    // nothing else resolved — dropping is only sound while some other anchor survives.
+    const droppedAmbiguous: Array<{ query: string; candidates: AnchorCandidate[] }> = [];
 
     for (const spec of specs) {
       const result = this.resolveAnchor(spec);
@@ -220,6 +223,7 @@ export class AnchorResolver {
           if (opts.tolerateMissing && isFuzzy && !dominant) {
             console.error(`-> Dropping ambiguous fuzzy term "${spec.query}" (${result.candidates.length} comparable candidates)`);
             missingQueries.push(spec.query);
+            droppedAmbiguous.push({ query: spec.query, candidates: result.candidates });
             continue;
           }
 
@@ -249,6 +253,37 @@ export class AnchorResolver {
     // resolves to nothing. Drop those and proceed with whatever anchors resolved, as long
     // as at least one did.
     if (opts.tolerateMissing) {
+      // Nothing survived, but some terms were dropped for being ambiguous — meaning we DID
+      // find plausible symbols and then threw them away. Reinstate the best of them.
+      //
+      // Dropping an ambiguous term is only defensible while another anchor still carries the
+      // query; as the last one standing it turns a real result into "no symbols matched",
+      // which is simply false. A user asking "how does orchestration work" against a project
+      // containing OrchestratorAgent should get it, flagged as a best guess, rather than
+      // nothing. The alternatives ride along in the disambiguation so the choice is visible
+      // and correctable.
+      if (resolvedAnchors.length === 0 && droppedAmbiguous.length > 0) {
+        const best = droppedAmbiguous
+          .filter(d => d.candidates.length > 0)
+          .sort((a, b) => (b.candidates[0].score ?? 0) - (a.candidates[0].score ?? 0))[0];
+
+        const node = best ? this.graph.getNode(best.candidates[0].nodeId) : undefined;
+        if (best && node) {
+          const chosen = this.mapNodeToResolved(node);
+          resolvedAnchors.push(chosen);
+          disambiguations.push({
+            query: best.query,
+            chosen,
+            alternatives: best.candidates.slice(1, 4)
+          });
+          const stillMissing = missingQueries.indexOf(best.query);
+          if (stillMissing !== -1) missingQueries.splice(stillMissing, 1);
+          console.error(
+            `-> No anchors survived; reinstating best candidate for "${best.query}" -> ${chosen.nodeId}`
+          );
+        }
+      }
+
       if (resolvedAnchors.length === 0) {
         return { status: 'not_found', missingQueries };
       }
