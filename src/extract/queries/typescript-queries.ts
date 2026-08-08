@@ -14,6 +14,30 @@ export const TYPESCRIPT_QUERIES = `
 (interface_declaration
   name: (type_identifier) @name) @definition.interface
 
+; Interface bodies. Without these an interface is an empty shell, so a field typed as an
+; interface resolves to a symbol with zero members and every this.field.method() through it
+; dies — the single largest structural cause of unresolved member chains.
+; The enclosing interface_declaration is already on the symbol stack when these match, so
+; containment edges to it are established automatically.
+(method_signature
+  name: [
+    (property_identifier)
+    (identifier)
+  ] @name) @definition.method
+
+(property_signature
+  name: [
+    (property_identifier)
+    (identifier)
+  ] @name) @definition.variable
+
+; Abstract class members are declarations without bodies, and fail the same way.
+(abstract_method_signature
+  name: [
+    (property_identifier)
+    (identifier)
+  ] @name) @definition.method
+
 (type_alias_declaration
   name: (type_identifier) @name) @definition.type_alias
 

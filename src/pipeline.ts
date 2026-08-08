@@ -100,10 +100,24 @@ export class Pipeline {
       merged.containments
     );
 
+    // 6b. Fold in the external stand-in symbols resolution synthesized along the way.
+    //
+    // Resolving `console.log`, an imported `Database`, or a `Map`-typed field mints a symbol
+    // into the registry so the reference has something to point at. Those symbols lived only
+    // in the registry, which is discarded here — so the edges referring to them pointed at
+    // node ids absent from `symbols`, and every consumer (getNode, the materializer, the
+    // serializers) treated them as missing. On this repo that was 43% of all resolved edges.
+    // They are real, useful nodes: they mark exactly where the project's dependencies begin.
+    const knownIds = new Set(merged.symbols.map(s => s.id));
+    const externalSymbols = registry.byId
+      .values()
+      .filter(s => !knownIds.has(s.id) && s.metadata?.external === true);
+    const allSymbols = [...merged.symbols, ...externalSymbols];
+
     // 7. Assemble final SemanticModel
     const model: SemanticModel = {
       project,
-      symbols: merged.symbols,
+      symbols: allSymbols,
       scopes: merged.scopes,
       containments: merged.containments,
       resolvedReferences: resolved,
@@ -112,7 +126,7 @@ export class Pipeline {
       projectRoot: resolvedRoot.replace(/\\/g, '/'),
       createdAt: new Date().toISOString(),
       fileCount: partials.length,
-      symbolCount: merged.symbols.length
+      symbolCount: allSymbols.length
     };
 
     return { model, fileRecords, stats: { parsed, reused } };

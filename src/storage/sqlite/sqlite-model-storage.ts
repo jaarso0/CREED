@@ -86,7 +86,21 @@ export class SqliteSemanticModelStorage implements SemanticModelStorage {
         @file_path, @file_path_lower,
         @start_line, @start_col, @end_line, @end_col, @exported, @visibility, @metadata, @is_project
       )
-      ON CONFLICT(id) DO NOTHING
+      /*
+       * Last write wins, matching KnowledgeGraph.addNode, which does nodes.set(id, node).
+       * A model can contain two symbols sharing an id (same-named declarations in one
+       * file — the 'duplicate_symbol' diagnostic exists for exactly this). With DO NOTHING
+       * the database kept the FIRST and the in-memory graph kept the LAST, so the two
+       * backends returned different nodes for the same id.
+       */
+      ON CONFLICT(id) DO UPDATE SET
+        kind = excluded.kind, name = excluded.name, name_lower = excluded.name_lower,
+        qualified_name = excluded.qualified_name, qualified_name_lower = excluded.qualified_name_lower,
+        file_path = excluded.file_path, file_path_lower = excluded.file_path_lower,
+        start_line = excluded.start_line, start_col = excluded.start_col,
+        end_line = excluded.end_line, end_col = excluded.end_col,
+        exported = excluded.exported, visibility = excluded.visibility,
+        metadata = excluded.metadata, is_project = excluded.is_project
     `);
 
     // External-content FTS: 'rebuild' reads straight from `symbols`, so this runs

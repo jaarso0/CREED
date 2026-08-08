@@ -202,6 +202,52 @@ function isInsideFunctionBody(node: any): boolean {
   return false;
 }
 
+const NAMED_TYPE_NODES = new Set(['type_identifier', 'nested_type_identifier', 'generic_type']);
+
+/** Type-annotation node shapes that can carry a resolvable named type somewhere inside. */
+const WRAPPER_TYPE_NODES = new Set([
+  'array_type',        // Scope[]
+  'union_type',        // Scope | undefined
+  'readonly_type',     // readonly Scope[]
+  'parenthesized_type' // (Scope)
+]);
+
+function isTypeNode(node: any): boolean {
+  return NAMED_TYPE_NODES.has(node?.type) || WRAPPER_TYPE_NODES.has(node?.type);
+}
+
+/**
+ * Reduces a type annotation to the named type a member lookup can be performed against.
+ *
+ * Previously only bare `type_identifier`/`generic_type` were recognised, so a field declared
+ * `private scopeStack: Scope[]` produced no declared type at all and every `this.scopeStack.x`
+ * chain died. Wrappers are unwrapped to the first named type inside them: `Scope[]` → `Scope`,
+ * `Foo | undefined` → `Foo`.
+ *
+ * Note the array case deliberately yields the *element* type. That is wrong for
+ * `.push`/`.length` (which live on Array, not Scope) but right for the far more common
+ * `this.items[0].method()` intent; the alternative today is no type information at all.
+ */
+function unwrapTypeNode(node: any, depth = 0): any | undefined {
+  if (!node || depth > 5) return undefined;
+
+  if (node.type === 'generic_type') {
+    return node.childForFieldName('name') ?? node;
+  }
+  if (NAMED_TYPE_NODES.has(node.type)) {
+    return node;
+  }
+  if (WRAPPER_TYPE_NODES.has(node.type)) {
+    for (const child of node.children ?? []) {
+      // Skip `null`/`undefined` union members — they carry no members worth resolving.
+      if (child.type === 'predefined_type' || child.type === 'undefined') continue;
+      const inner = unwrapTypeNode(child, depth + 1);
+      if (inner) return inner;
+    }
+  }
+  return undefined;
+}
+
 function getDeclaredTypeChain(node: any, filePath: string): string[] | undefined {
   if (filePath.endsWith('.py')) {
     if (node.type !== 'assignment') return undefined;
@@ -216,22 +262,23 @@ function getDeclaredTypeChain(node: any, filePath: string): string[] | undefined
   }
 
   // variable_declarator (const/let), plus class fields: public_field_definition (TS) and
-  // field_definition (JS). All expose 'type' (TS annotation) and/or 'value' (initializer).
+  // field_definition (JS), plus interface members: property_signature. All expose 'type'
+  // (TS annotation) and/or 'value' (initializer).
   if (
     node.type !== 'variable_declarator' &&
     node.type !== 'public_field_definition' &&
-    node.type !== 'field_definition'
+    node.type !== 'field_definition' &&
+    node.type !== 'property_signature'
   ) {
     return undefined;
   }
 
   const typeAnnotation = node.childForFieldName('type');
   if (typeAnnotation) {
-    const typeNode = typeAnnotation.children?.find(
-      (c: any) => c.type === 'type_identifier' || c.type === 'nested_type_identifier' || c.type === 'generic_type'
-    );
+    const typeNode = typeAnnotation.children?.find((c: any) => isTypeNode(c));
     if (typeNode) {
-      return getQualifierChain(typeNode.type === 'generic_type' ? typeNode.childForFieldName('name') ?? typeNode : typeNode);
+      const named = unwrapTypeNode(typeNode);
+      if (named) return getQualifierChain(named);
     }
   }
 

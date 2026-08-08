@@ -26,7 +26,7 @@ export class ScopeResolver {
     if ((qualifierChain[0] === 'this' || qualifierChain[0] === 'self') && qualifierChain.length > 1) {
       const enclosingClass = this.findEnclosingClass(candidate.fromSymbolId);
       if (enclosingClass) {
-        const member = this.resolveChain(enclosingClass, qualifierChain, 1);
+        const member = this.resolveChain(enclosingClass, qualifierChain, 1, resolvedImports);
         if (member) {
           return { symbol: member, method: 'scope' };
         }
@@ -52,7 +52,7 @@ export class ScopeResolver {
       const matchedBase = scopeSymbols.find(s => s.name === nameToLookUp);
       if (matchedBase) {
         if (qualifierChain.length > 1) {
-          const resolvedMember = this.resolveChain(matchedBase, qualifierChain, 1);
+          const resolvedMember = this.resolveChain(matchedBase, qualifierChain, 1, resolvedImports);
           if (resolvedMember) {
             return { symbol: resolvedMember, method: 'scope' };
           }
@@ -67,9 +67,9 @@ export class ScopeResolver {
       if (!matchedBase && qualifierChain.length > 1 && currentScope.ownerSymbolId) {
         const localBinding = this.registry.localBindings.lookup(currentScope.ownerSymbolId, nameToLookUp);
         if (localBinding) {
-          const typeSymbol = this.resolveTypeSymbol(localBinding.declaredType.qualifierChain, filePath);
+          const typeSymbol = this.resolveTypeSymbol(localBinding.declaredType.qualifierChain, filePath, resolvedImports);
           if (typeSymbol) {
-            const resolvedMember = this.resolveChain(typeSymbol, qualifierChain, 1);
+            const resolvedMember = this.resolveChain(typeSymbol, qualifierChain, 1, resolvedImports);
             if (resolvedMember) {
               return { symbol: resolvedMember, method: 'scope' };
             }
@@ -91,7 +91,7 @@ export class ScopeResolver {
       const prefix = qualifierChain.slice(0, len).join('.');
       const resolvedImport = resolvedImports.get(prefix);
       if (resolvedImport) {
-        const resolvedMember = this.resolveChain(resolvedImport, qualifierChain, len);
+        const resolvedMember = this.resolveChain(resolvedImport, qualifierChain, len, resolvedImports);
         if (resolvedMember) {
           return { symbol: resolvedMember, method: 'scope' };
         }
@@ -121,7 +121,7 @@ export class ScopeResolver {
 
     if (bestMatch) {
       if (qualifierChain.length > 1) {
-        const resolvedMember = this.resolveChain(bestMatch, qualifierChain, 1);
+        const resolvedMember = this.resolveChain(bestMatch, qualifierChain, 1, resolvedImports);
         if (resolvedMember) {
           return { symbol: resolvedMember, method: 'global_fallback' };
         }
@@ -164,7 +164,7 @@ export class ScopeResolver {
       }
 
       if (qualifierChain.length > 1) {
-        const resolvedMember = this.resolveChain(extSymbol, qualifierChain, 1);
+        const resolvedMember = this.resolveChain(extSymbol, qualifierChain, 1, resolvedImports);
         if (resolvedMember) {
           return { symbol: resolvedMember, method: 'global_fallback' };
         }
@@ -195,17 +195,26 @@ export class ScopeResolver {
     return scopes[0];
   }
 
-  private resolveChain(startSymbol: Symbol, chain: string[], index: number): Symbol | undefined {
+  private resolveChain(
+    startSymbol: Symbol,
+    chain: string[],
+    index: number,
+    resolvedImports?: Map<string, Symbol>
+  ): Symbol | undefined {
     if (index >= chain.length) return startSymbol;
 
     const memberName = chain[index];
-    const nextSymbol = this.resolveMember(startSymbol, memberName);
+    const nextSymbol = this.resolveMember(startSymbol, memberName, resolvedImports);
     if (!nextSymbol) return undefined;
 
-    return this.resolveChain(nextSymbol, chain, index + 1);
+    return this.resolveChain(nextSymbol, chain, index + 1, resolvedImports);
   }
 
-  private resolveMember(parentSymbol: Symbol, memberName: string): Symbol | undefined {
+  private resolveMember(
+    parentSymbol: Symbol,
+    memberName: string,
+    resolvedImports?: Map<string, Symbol>
+  ): Symbol | undefined {
     const childEdges = this.containments.filter(c => c.parentId === parentSymbol.id);
     for (const edge of childEdges) {
       const child = this.registry.byId.lookup(edge.childId);
@@ -222,10 +231,27 @@ export class ScopeResolver {
         | { qualifierChain: string[] }
         | undefined;
       if (declaredType && declaredType.qualifierChain.length > 0) {
-        const typeSymbol = this.resolveTypeSymbol(declaredType.qualifierChain, parentSymbol.filePath);
+        const typeSymbol = this.resolveTypeSymbol(
+          declaredType.qualifierChain,
+          parentSymbol.filePath,
+          resolvedImports
+        );
         if (typeSymbol && typeSymbol.id !== parentSymbol.id) {
-          const member = this.resolveMember(typeSymbol, memberName);
+          const member = this.resolveMember(typeSymbol, memberName, resolvedImports);
           if (member) return member;
+        }
+
+        // The declared type isn't a project class/interface — it's a stdlib type (Map, Set,
+        // Promise) or something from a dependency (`Database` from better-sqlite3). Synthesize
+        // an external symbol for it, exactly as the BUILTINS path in resolveScope does for
+        // bare `console.log`. Without this the whole chain is dropped, which is why
+        // `this.fileCache.clear()` on a `Map` field appeared as an unresolved reference.
+        if (!typeSymbol) {
+          const external = this.externalTypeSymbol(declaredType.qualifierChain, parentSymbol);
+          if (external) {
+            const member = this.resolveMember(external, memberName, resolvedImports);
+            if (member) return member;
+          }
         }
       }
     }
@@ -261,6 +287,45 @@ export class ScopeResolver {
     return undefined;
   }
 
+  /**
+   * Gets (creating once) an external stand-in symbol for a type declared in this project but
+   * defined outside it — stdlib (`Map`, `Set`) or a dependency (`Database`).
+   *
+   * These are marked `external`, which makes `resolveMember` synthesize members on demand, so
+   * `this.cache.get(...)` produces a real edge to `external::type::Map::get` rather than
+   * vanishing. Edges to these are honest: they say "this goes somewhere outside the project"
+   * instead of silently dropping the reference or, worse, name-matching onto an unrelated
+   * project symbol.
+   */
+  private externalTypeSymbol(qualifierChain: string[], context: Symbol): Symbol | undefined {
+    const name = qualifierChain[qualifierChain.length - 1];
+    if (!name) return undefined;
+
+    // Type names are capitalized by convention in every language this indexes. A lowercase
+    // name here is far more likely to be a mis-parsed annotation than a real external type.
+    if (name[0] !== name[0].toUpperCase() || name[0] === name[0].toLowerCase()) return undefined;
+
+    const id = `external::type::${name}`;
+    let symbol = this.registry.byId.lookup(id);
+    if (!symbol) {
+      symbol = {
+        id,
+        kind: 'class',
+        name,
+        qualifiedName: name,
+        filePath: 'external',
+        range: context.range,
+        exported: true,
+        visibility: 'public',
+        metadata: { external: true }
+      };
+      this.registry.byId.add(symbol);
+      this.registry.byName.add(symbol);
+      this.registry.byQualifiedName.add(symbol);
+    }
+    return symbol;
+  }
+
   /** Walk containment parents up from a symbol to the class/interface/struct that encloses it. */
   private findEnclosingClass(symbolId: string | undefined): Symbol | undefined {
     let current = symbolId;
@@ -280,9 +345,32 @@ export class ScopeResolver {
     return undefined;
   }
 
-  private resolveTypeSymbol(qualifierChain: string[], filePath: string): Symbol | undefined {
+  /**
+   * Resolves a declared type name to its class/interface symbol.
+   *
+   * Ambiguity is the hazard here, not absence: a bare name lookup returns every same-named
+   * type in the project, and taking the first one silently binds to whichever happened to
+   * be indexed first. This repo has two `SymbolIndex` symbols — a class in registry.ts and
+   * the interface in retrieval/symbol-index.ts — so `this.indexes.matchByName()` resolved
+   * against the wrong one and failed. Worse than failing, a near-miss produces a *wrong*
+   * edge that looks confident.
+   *
+   * Preference order: what the file actually imported under that name, then a type declared
+   * in the same file, then a unique global match. An ambiguous global match resolves to
+   * nothing rather than guessing.
+   */
+  private resolveTypeSymbol(
+    qualifierChain: string[],
+    filePath: string,
+    resolvedImports?: Map<string, Symbol>
+  ): Symbol | undefined {
     const category = this.getLanguageCategory(filePath);
     const isTypeKind = (s: Symbol) => s.kind === 'class' || s.kind === 'interface';
+    const name = qualifierChain[qualifierChain.length - 1];
+
+    // 1. The binding this file actually has for that name.
+    const imported = resolvedImports?.get(qualifierChain.join('.')) ?? resolvedImports?.get(name);
+    if (imported && isTypeKind(imported)) return imported;
 
     if (qualifierChain.length > 1) {
       const qname = qualifierChain.join('.');
@@ -292,11 +380,17 @@ export class ScopeResolver {
       if (qnameMatches.length > 0) return qnameMatches[0];
     }
 
-    const name = qualifierChain[qualifierChain.length - 1];
     const nameMatches = this.registry.byName
       .lookup(name)
       .filter(s => isTypeKind(s) && this.getLanguageCategory(s.filePath) === category);
-    return nameMatches[0];
+
+    // 2. Declared in this very file.
+    const sameFile = nameMatches.find(s => s.filePath === filePath);
+    if (sameFile) return sameFile;
+
+    // 3. Unambiguous project-wide. Several same-named types with no import to disambiguate
+    // is a genuine unknown — returning one at random is how wrong edges get created.
+    return nameMatches.length === 1 ? nameMatches[0] : undefined;
   }
 
   private getLanguageCategory(filePath: string): string {
