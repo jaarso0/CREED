@@ -49,19 +49,30 @@ That's the same engine your agent gets — you're just reading it yourself.
 
 ---
 
-## Wire it into your editor
+## Wire it into your editor — one command
 
-Creed speaks standard MCP over stdio, so it works in **Claude Code, Claude Desktop, Cursor,
-Antigravity, Kiro, Windsurf, VS Code** — anything that speaks the protocol.
+```bash
+npx creed-kg init
+```
 
-**It's the same block everywhere.** Only the file it goes in changes:
+That indexes the repo, detects which editors you use, writes the MCP config for each, and
+adds `.creed/` to your `.gitignore`. **Restart your editor and your agent has the tools.**
+
+It merges — existing MCP servers and unrelated settings are left alone — and re-running is
+a no-op. Use `--all` to configure every supported editor, or `--editor cursor` to pick one.
+
+<details>
+<summary>Prefer to do it by hand?</summary>
+
+It's the same block everywhere, with **no project path to fill in** — Creed walks up from
+wherever your editor launches it to find the project root, so this works in every repo:
 
 ```json
 {
   "mcpServers": {
     "creed": {
       "command": "npx",
-      "args": ["creed-kg", "mcp", "."]
+      "args": ["-y", "creed-kg", "mcp"]
     }
   }
 }
@@ -69,18 +80,22 @@ Antigravity, Kiro, Windsurf, VS Code** — anything that speaks the protocol.
 
 | Editor | Where it goes |
 | :--- | :--- |
-| **Claude Code** | `.mcp.json` in your project root — or just run `claude mcp add creed -- npx creed-kg mcp .` |
-| **Claude Desktop** | `claude_desktop_config.json` — run **`npx creed-kg setup`** and it writes the file for you |
-| **Cursor** | `.cursor/mcp.json` (this project) or `~/.cursor/mcp.json` (everywhere) |
+| **Claude Code** | `.mcp.json` — or `claude mcp add creed -- npx creed-kg mcp` |
+| **Cursor** | `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global) |
+| **Kiro** | `.kiro/settings/mcp.json` |
+| **Gemini CLI** | `.gemini/settings.json` |
+| **VS Code / Copilot** | `.vscode/mcp.json` — names the key `servers`, not `mcpServers` |
+| **Claude Desktop** | run `npx creed-kg setup` |
 | **Windsurf** | `~/.codeium/windsurf/mcp_config.json` |
-| **Kiro** | `.kiro/settings/mcp.json` (workspace) or `~/.kiro/settings/mcp.json` (user) |
-| **Antigravity** | Add it from the editor's MCP settings panel — same block |
-| **VS Code / Copilot** | `.vscode/mcp.json` — note VS Code names the key `servers`, not `mcpServers` |
+| **Codex CLI** | `~/.codex/config.toml` — TOML, `[mcp_servers.creed]` |
+| **Antigravity** | the editor's MCP settings panel |
 
-Restart the editor and your agent has the six tools below.
+Because the block carries no path, you can put it in a **global** config once and it works
+in every project you open.
+</details>
 
-`npx creed-kg mcp .` indexes on first connect and then keeps itself current — a file watcher
-rebuilds as you edit, re-parsing only what actually changed. There is no re-index command to
+Once connected, the server indexes on first connect and keeps itself current — a file
+watcher rebuilds as you edit, re-parsing only what changed. There is no re-index command to
 remember.
 
 ---
@@ -90,23 +105,26 @@ remember.
 Not a JSON blob it has to decode — formatted markdown with the code already in it:
 
 ````
-**Exploration: SqlitePartialCache hashSource**
+**Exploration: what breaks if I change hashSource**
 
-Found 19 symbol(s) across 5 file(s).
+Anchored on: `hashSource` (function — src/storage/sqlite/partial-cache.ts:24)
+
+Found 9 symbol(s) across 5 file(s).
 
 **Blast radius — what depends on these (update/verify before editing)**
 
-- `SqlitePartialCache` (class — src/storage/sqlite/partial-cache.ts:49) — 8 caller(s) across src/index.ts, src/watcher.ts
-- `hashSource` (function — src/storage/sqlite/partial-cache.ts:24) — 4 caller(s) across src/pipeline.ts
+- `hashSource` (function — src/storage/sqlite/partial-cache.ts:24) — 4 caller(s) across src/pipeline.ts, tests/partial-cache.test.ts
 
 **Relationships**
 
 - `Pipeline.build` --[call]--> `hashSource` [resolved-via: import]
   src/pipeline.ts:60 → `const contentHash = hashSource(file.sourceCode);`
+- `watchAndRebuild` --[call]--> `Pipeline.build` [resolved-via: scope]
+  src/watcher.ts:56 → `result = await pipeline.build(targetDir, { cache });`
 
 **Source Code**
 
-**`src/storage/sqlite/partial-cache.ts`** — hashSource(function), SqlitePartialCache(class)
+**`src/storage/sqlite/partial-cache.ts`** — hashSource(function)
 
 ```typescript
 24	export function hashSource(sourceCode: string): string {
@@ -115,7 +133,11 @@ Found 19 symbol(s) across 5 file(s).
 ```
 ````
 
-Three things worth noticing:
+Four things worth noticing:
+
+**It says what it anchored on.** The question was English; the header names the symbol it
+actually resolved to. When a question anchors somewhere you didn't intend, you can see it —
+rather than reading a confident answer about the wrong function.
 
 **The blast radius comes first.** Before touching anything, your agent knows what depends on
 it and where those callers live.
@@ -128,19 +150,43 @@ handed, instead of reopening the file to work out where anything sits.
 
 ---
 
-## Six tools, one you'll use most
+## One tool
 
-| Tool | Ask it |
+`explore`. Throw a question at it — symbol names, file names, plain English, or all three
+mixed together — and it answers.
+
+| Ask it | And it |
 | :--- | :--- |
-| **`explore_flow`** | **Start here.** Throw a free-form query at it — symbol names, file names, plain English, mixed together. It figures out which terms are real, traverses from all of them, and shows how they connect. |
-| `search_symbols` | "Where is `X` defined?" |
-| `explore_region` | "What does `X` connect to?" |
-| `trace_path` | "How does A reach B?" |
-| `analyze_impact` | "What breaks if I change `X`?" |
-| `query_graph` | Escape hatch for a raw query plan. |
+| "how does crawling work" | anchors on every symbol the concept spans and returns all of them |
+| "where is `X` defined" | anchors on the definition and its neighbourhood |
+| "what does `X` connect to" | traverses outward from `X` |
+| "how does A reach B" | synthesizes the call path connecting them |
+| "what breaks if I change `X`" | flips to incoming edges and traces the dependency cone |
 
-Most sessions never need more than `explore_flow` — it replaces the
-search → copy-an-ID → explore round-trip with a single call.
+There's nothing to choose between and no anchor to look up first. A multi-tool surface makes
+you decide, *before* you know the answer, whether your question is a search, a neighbourhood,
+a path or an impact query — and then hand it a symbol name you'd have to go find. That round
+trip is where questions phrased in English tend to die.
+
+Here the whole question is resolved at once, which matters most when the word you used isn't
+the word in the code:
+
+- **A concept spanning several symbols anchors on all of them.** "crawling", against a
+  codebase with `crawl_site`, `crawl_competitors` and `get_crawled_pages`, returns all
+  three — rather than picking one arbitrarily or giving up because the term was ambiguous.
+- **English word endings reach the code's spelling** — "resolution" finds `AnchorResolver`,
+  "traversal" finds `traverse`.
+- **Typos still resolve** — "anchor resolvr" lands on `AnchorResolver`.
+- **Generic words are searched, not discarded.** A project whose central class is `Config` is
+  findable by asking for "config".
+- **Words that co-occur reinforce each other**, so "voice agent context" ranks the file where
+  all three land above anything matching only one.
+
+Terms that match nothing are simply ignored — and when they add up to a real share of what
+you asked, the answer says so rather than quietly returning less.
+
+`depth`, `direction`, `edgeKinds` and `maxAnchors` are there when you want to steer it, and
+are inferred from the question when you don't.
 
 ---
 
@@ -162,6 +208,10 @@ you should treat it with suspicion.
 That distinction is the difference between "nothing depends on this" and "I couldn't tell" —
 two answers that look identical in every grep-based workflow, and lead to very different
 decisions. It's also how two real resolver bugs got caught during Creed's own development.
+
+The same applies to the question itself. If most of what you asked matched no symbol, or you
+named two symbols and nothing connects them, the answer says so in a footer — under the
+content, not above it, so a warning on every good result never trains you to skip it.
 
 ---
 
@@ -201,7 +251,7 @@ grammars.
 
 Creed also recognises what your code *means*, not just its shape: adapters detect
 **FastAPI, Flask, NestJS and Express** routes, ORM data models, and service classes, and
-attach that straight to the graph. So `explore_flow "POST /login"` resolves to the handler.
+attach that straight to the graph. So `explore "POST /login"` resolves to the handler.
 
 Cross-file resolution follows imports, class inheritance, instance-method calls through
 local variables, and `this.field.method()` chains — through the field's declared type,
@@ -225,18 +275,19 @@ views, a details inspector, and execution-flow tracing. Ships prebuilt; nothing 
 
 | Command | What it does |
 | :--- | :--- |
+| `npx creed-kg init` | Index the repo and connect it to your editors |
 | `npx creed-kg query "<question>"` | Ask about your codebase and print the answer |
-| `npx creed-kg mcp .` | Run as an MCP server for your editor |
-| `npx creed-kg .` | Index and print a report |
-| `npx creed-kg serve .` | Open the visual explorer |
+| `npx creed-kg mcp` | Run as an MCP server for your editor |
+| `npx creed-kg` | Index and print a report |
+| `npx creed-kg serve` | Open the visual explorer |
 | `npx creed-kg setup` | Write the Claude Desktop config for you |
 
-Add `--path <dir>` to `query` to point it at a project other than the current directory.
+Every command finds the project root on its own; `--path <dir>` overrides it.
 
-The index is a normal SQLite database at `.masai/graph.db` — query it however you like:
+The index is a normal SQLite database at `.creed/graph.db` — query it however you like:
 
 ```bash
-sqlite3 .masai/graph.db "SELECT name, kind, file_path FROM symbols WHERE name_lower = 'userservice';"
+sqlite3 .creed/graph.db "SELECT name, kind, file_path FROM symbols WHERE name_lower = 'userservice';"
 ```
 
 Or drive the pipeline directly:
@@ -261,9 +312,9 @@ graph.close();
 ## Good to know
 
 - **Node 22+** required.
-- Add **`.masai/`** to your `.gitignore` — it's a derived cache, rebuildable from source at
+- Add **`.creed/`** to your `.gitignore` — it's a derived cache, rebuildable from source at
   any time.
-- `MASAI_NO_CACHE=1` forces a full re-parse if you ever want one.
+- `CREED_NO_CACHE=1` forces a full re-parse if you ever want one.
 
 ---
 
