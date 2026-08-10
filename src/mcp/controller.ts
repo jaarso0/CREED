@@ -87,7 +87,15 @@ export class RequestController {
     // search-then-copy-nodeId round-trip.
     const isSearch = plan.operation === 'region' && plan.constraints?.searchMode === true;
     const tolerateMissing = plan.constraints?.tolerateMissingAnchors === true;
-    const resolution = this.resolver.resolveAll(plan.anchors, { autoPick: !isSearch, tolerateMissing });
+    // A free-form question resolves as a whole (see AnchorResolver.resolveFreeForm), so that
+    // ranking sees every term at once and can anchor on the *set* of symbols a concept spans.
+    // The per-spec path remains for callers that name exactly what they want.
+    const freeFormQuery = plan.constraints?.freeFormQuery;
+    const resolution = freeFormQuery
+      ? this.resolver.resolveFreeForm(freeFormQuery, plan.anchors, {
+          maxAnchors: plan.constraints?.maxAnchors
+        })
+      : this.resolver.resolveAll(plan.anchors, { autoPick: !isSearch, tolerateMissing });
 
     if (resolution.status === 'not_found') {
       return {
@@ -116,6 +124,7 @@ export class RequestController {
     }
 
     const disambiguations = resolution.disambiguations;
+    const unmatchedTerms = resolution.unmatchedTerms ?? [];
 
     // 2. Traversal Phase (Safe Graph Executor)
     // Dedup by node id — a multi-term query can resolve two terms to the same symbol
@@ -159,11 +168,19 @@ export class RequestController {
       }
     }
 
-    // ── Header: what was asked, and how much was found ────────────────────────
-    const queryText = plan.anchors.map(a => a.query).filter(Boolean).join(' ');
+    // ── Header: what was asked, what it anchored on, and how much was found ───
+    // The question is echoed verbatim rather than as the surviving anchor terms: a header
+    // reading "Exploration: runCheckout charge" for the question "how do runCheckout and
+    // charge relate" silently misreports what was asked.
+    const queryText = freeFormQuery || plan.anchors.map(a => a.query).filter(Boolean).join(' ');
     const fileCount = new Set(evidence.nodes.map(n => n.file).filter(Boolean)).size;
+    const anchorLine =
+      freeFormQuery && resolution.anchors.length > 0
+        ? `Anchored on: ${resolution.anchors.map(a => this.formatNodeRef(a.nodeId)).join(', ')}\n\n`
+        : '';
     const header =
       `**Exploration: ${queryText}**\n\n` +
+      anchorLine +
       `Found ${evidence.nodes.length} symbol(s) across ${fileCount} file(s).`;
     contextPackage.serializedContext = header + '\n\n' + contextPackage.serializedContext;
 
@@ -174,27 +191,49 @@ export class RequestController {
     const notes: string[] = [];
 
     if (disambiguations && disambiguations.length > 0) {
-      for (const d of disambiguations) {
-        const alts = d.alternatives.length > 0
-          ? ` — also matched: ${d.alternatives.map(a => a.qualifiedName || a.nodeId).join(', ')}. Pass an exact ID to pick another.`
-          : '';
-        notes.push(`Auto-resolved "${d.query}" → \`${d.chosen.qualifiedName}\` [${d.chosen.nodeId}]${alts}`);
+      if (freeFormQuery) {
+        // One line for the whole set. Per-anchor notes made sense when each term produced
+        // exactly one pick; a free-form question can anchor on half a dozen symbols, and six
+        // near-identical warning lines are noise the reader learns to skip.
+        const picks = disambiguations.map(d => `\`${d.chosen.qualifiedName}\``).join(', ');
+        notes.push(
+          `Auto-resolved from the question text: ${picks}. ` +
+          `Name a symbol exactly (or pass its ID) to anchor somewhere else.`
+        );
+      } else {
+        for (const d of disambiguations) {
+          const alts = d.alternatives.length > 0
+            ? ` — also matched: ${d.alternatives.map(a => a.qualifiedName || a.nodeId).join(', ')}. Pass an exact ID to pick another.`
+            : '';
+          notes.push(`Auto-resolved "${d.query}" → \`${d.chosen.qualifiedName}\` [${d.chosen.nodeId}]${alts}`);
+        }
       }
     }
 
     if (plan.constraints?.synthesizeFlow) {
-      const requested = plan.anchors.length;
-      const resolved = resolution.anchors.length;
-      const weakCoverage = requested >= 2 && resolved / requested < 0.5;
-      const noConnections = resolved >= 2 && flowText === '';
-      const tooThin = requested >= 2 && resolved <= 1;
-      if (weakCoverage || noConnections || tooThin) {
+      // Only a caller who named two or more symbols *that exist* was asking how those symbols
+      // relate, so only they are owed a warning when no path is found. A prose question
+      // anchors on whatever the concept touches, and those symbols having no call path
+      // between them is an ordinary fact about the code, not a sign the answer is poor.
+      const exactTerms = resolution.exactTerms ?? [];
+      const noConnections = exactTerms.length >= 2 && resolution.anchors.length >= 2 && flowText === '';
+
+      // Terms the caller typed that matched nothing. Reported only when they are a
+      // substantial share of the question: one unrecognized word in a sentence is normal
+      // English, while most of them unrecognized means the answer is built on very little.
+      const namedTerms = plan.anchors.filter(a => !/\s/.test(a.query.trim())).length;
+      const ignoredTerms =
+        unmatchedTerms.length >= Math.max(2, Math.ceil(namedTerms / 2));
+
+      if (ignoredTerms || noConnections) {
         const reasons: string[] = [];
-        if (tooThin || weakCoverage) reasons.push(`only ${resolved} of ${requested} query terms resolved to symbols`);
-        if (noConnections) reasons.push(`no call/render paths connect the resolved symbols`);
+        if (ignoredTerms) {
+          reasons.push(`no symbol matched ${unmatchedTerms.map(t => `"${t}"`).join(', ')}`);
+        }
+        if (noConnections) reasons.push('no call/render paths connect the resolved symbols');
         notes.push(
           `⚠ Low confidence: ${reasons.join('; ')}. This view may be incomplete — ` +
-          `try naming specific symbols by exact name (or use search_symbols to find them first).`
+          `try naming a specific symbol or file by its exact name.`
         );
       }
     }
