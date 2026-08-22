@@ -17,8 +17,8 @@ MASAI-KG turns a codebase into a queryable knowledge graph and exposes it two wa
                     │                                     instance-type/fallback)  │
                     └────────────────────────────────────────┬───────────────────┘
                                                                ▼
-                                                    SemanticModel (JSON, persisted
-                                                    to .masai/semantic-model.json)
+                                                    SemanticModel (persisted to
+                                                    .creed/graph.db — SQLite)
                                                                │
                                             buildGraphFromModel (graph.ts)
                                                                │
@@ -77,8 +77,45 @@ Every resolved reference carries a `resolutionMethod` (`import` / `scope` / `qua
 
 Output: a `KnowledgeGraph` — in-memory adjacency maps (`edgesFrom`, `edgesTo`), no filtering happens at this step, so anything present in `model.symbols` is guaranteed to be a graph node.
 
-### Persistence ([src/storage/semantic-model-storage.ts](src/storage/semantic-model-storage.ts))
-`JsonSemanticModelStorage` serializes the `SemanticModel` to `<project>/.masai/semantic-model.json`. This is a cache for the CLI analysis mode and for `scratch/query.ts` — **the MCP server does not read from it on startup**, it always rebuilds fresh (see below).
+#### Two graph backends
+
+Consumers depend on the `ReadableGraph` interface ([src/graph/graph.ts](src/graph/graph.ts)), not on the concrete class, so either backend can be substituted:
+
+- **`KnowledgeGraph`** — the in-memory one above. Everything resident in Maps.
+- **`SqliteKnowledgeGraph`** ([src/graph/sqlite-graph.ts](src/graph/sqlite-graph.ts)) — serves the same reads from `.creed/graph.db` through indexed queries, with a bounded node cache. Resident memory tracks what queries touch rather than the size of the repo. This is what the `mcp` command uses.
+
+The same split exists for symbol lookup via the `SymbolIndex` interface ([src/retrieval/symbol-index.ts](src/retrieval/symbol-index.ts)): `RetrievalIndexes` (in-memory Maps) and `SqliteSymbolIndex` (indexed + FTS5 trigram). `CandidateDiscovery`, `AnchorResolver` and `ImpactRetriever` are written against the interface, so their scoring and ranking are identical either way — `tests/sqlite-backend-equivalence.test.ts` asserts exactly that.
+
+**Measured tradeoff** (synthetic corpora, discovery through the real code path):
+
+| corpus | selective (in-mem) | selective (sqlite) | broad (in-mem) | broad (sqlite) | memory (in-mem) | memory (sqlite) |
+|---|---|---|---|---|---|---|
+| 10k symbols | 2.9 ms | 0.7 ms | 6.9 ms | 24.6 ms | 5.6 MB | ~0 |
+| 50k symbols | 19.1 ms | 1.8 ms | 73.8 ms | 210.9 ms | 21.7 MB | ~0 |
+| 200k symbols | 94.6 ms | 1.7 ms | 436 ms | 1629 ms | 75.6 MB | ~0 |
+
+Selective lookups — a specific symbol, which is what code navigation mostly is — stay flat with the SQLite backend while the in-memory one grows linearly. Broad multi-word queries that match a large fraction of the corpus are ~3.5x slower under SQLite, because every match must be marshalled into an object; both backends are linear there. Memory is the unambiguous win.
+
+### Incremental parsing ([src/storage/sqlite/partial-cache.ts](src/storage/sqlite/partial-cache.ts))
+
+Each source file's `PartialSemanticModel` — the output of parse+extract, the expensive stage — is stored gzipped in `files.partial`, keyed by a SHA-1 of the file's contents. On the next build, a file whose hash still matches skips straight to merge.
+
+**Parsing is incremental; resolution is not, deliberately.** Merge, registry and resolution always run over the complete set of partials, because a change in one file can invalidate references resolved in *other* files via `global_fallback`/`qualified_name`. That is the same reasoning that killed the earlier `rebuildFile` attempt, and it is why this is safe where that was not.
+
+Two guards, both required: the content hash proves the *input* is unchanged, and `PIPELINE_VERSION` proves the *code that processed it* is unchanged. **Bump `PIPELINE_VERSION` in [schema.ts](src/storage/sqlite/schema.ts) whenever extraction output changes** — new queries, new symbol kinds, a changed id scheme — or users keep serving partials produced by the old logic. `CREED_NO_CACHE=1` bypasses the cache entirely.
+
+Measured on this repo (110 files): cold build **3.97 s**, fully cached rebuild **0.15 s**, one file changed **0.16 s** (1 parsed, 109 reused). The gzipped partials add ~0.4 MB to the database. This matters most for the watcher, which previously re-parsed the entire project on every keystroke-scale edit.
+
+### Persistence ([src/storage/sqlite/](src/storage/sqlite/))
+`SqliteSemanticModelStorage` writes the `SemanticModel` to `<project>/.creed/graph.db`, a normalized SQLite database — one table per model collection (`symbols`, `scopes`, `containments`, `resolved_references`, `unresolved_references`, `diagnostics`), plus `meta` and `files`.
+
+Two schema notes: `Range` is flattened into four INTEGER columns (no JSON parsing on hot paths), and `metadata` stays a JSON TEXT column (the type is an open `Record<string, unknown>` by design). Indexes back the specific lookups that used to be linear scans over in-memory `Map`s — `symbols(name_lower)` for name discovery, `resolved_references(to_symbol_id, kind)` for `getCallersOf`, and so on.
+
+A full rebuild clears and repopulates inside a single transaction, so a concurrent reader sees either the old index or the new one, never a half-written graph. `SCHEMA_VERSION` mismatches drop and recreate rather than migrate — the database is a derived cache of the source tree, never user data.
+
+This is a cache for the CLI analysis mode and for `scratch/query.ts` — **the MCP server does not read from it on startup**, it always rebuilds fresh (see below).
+
+The previous `JsonSemanticModelStorage` remains, deprecated, so pre-migration `.masai/semantic-model.json` files still load.
 
 ---
 
@@ -168,8 +205,8 @@ This is the same `CandidateDiscovery` engine `AnchorResolver`'s step 4 falls bac
 
 ### Backend — `startServer(targetPath)` ([src/serve.ts](src/serve.ts))
 A raw `http.Server` (no framework):
-- Locates and loads `.masai/semantic-model.json` (checking a few candidate paths).
-- `GET /api/model` serves the raw semantic model JSON.
+- Loads `.creed/graph.db` and reconstructs the model, falling back to a legacy `.masai/semantic-model.json` when no database is present.
+- `GET /api/model` serves the semantic model as JSON — the same shape either way, so the visualizer is unaffected by the storage change.
 - Static file serving from `visualizer/dist` with path-traversal protection and SPA fallback (unmatched routes serve `index.html`).
 - Port search 3000–3009 on `EADDRINUSE`, auto-opens the OS default browser on success.
 
