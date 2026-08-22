@@ -316,7 +316,7 @@ function VisualizerDashboard() {
         <div className="sidebar-header">
           <h1>
             <Activity size={18} color="#3b82f6" />
-            <span>MASAI Knowledge Graph</span>
+            <span>Creed</span>
           </h1>
 
           {/* View Selector Segments */}
