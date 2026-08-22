@@ -7,7 +7,7 @@ import {
   compileExploreRegion,
   compileTracePath,
   compileAnalyzeImpact,
-  compileExploreFlow
+  compileExplore
 } from './compile.js';
 import { RequestController } from './controller.js';
 import { SymbolIndex } from '../retrieval/symbol-index.js';
@@ -57,7 +57,7 @@ export class MCPServer {
     });
 
     rl.on('close', () => {
-      console.error('MASAI-KG MCP Server stdio channel closed');
+      console.error('creed-kg MCP server stdio channel closed');
     });
   }
 
@@ -122,6 +122,28 @@ export class MCPServer {
       let plan: GraphQueryPlan;
 
       switch (toolName) {
+        case 'explore':
+          if (typeof args.query !== 'string' || args.query.trim() === '') {
+            this.sendToolError(id, 'Missing or invalid parameter: query');
+            return;
+          }
+          plan = compileExplore(args);
+          break;
+
+        // ── Legacy tool names ────────────────────────────────────────────────
+        // No longer advertised in tools/list — `explore` covers all of them, and the
+        // multi-tool surface was itself a source of failed queries: callers had to know
+        // which tool a question belonged to, and `explore_flow` in particular required an
+        // anchor that already resolved, forcing a search-then-explore round trip. Still
+        // routed so pinned configs and scripts written against them keep working.
+        case 'explore_flow':
+          if (typeof args.query !== 'string') {
+            this.sendToolError(id, 'Missing or invalid parameter: query');
+            return;
+          }
+          plan = compileExplore(args);
+          break;
+
         case 'search_symbols':
           if (typeof args.query !== 'string') {
             this.sendToolError(id, 'Missing or invalid parameter: query');
@@ -152,14 +174,6 @@ export class MCPServer {
             return;
           }
           plan = compileAnalyzeImpact(args);
-          break;
-
-        case 'explore_flow':
-          if (typeof args.query !== 'string') {
-            this.sendToolError(id, 'Missing or invalid parameter: query');
-            return;
-          }
-          plan = compileExploreFlow(args);
           break;
 
         case 'query_graph':
@@ -246,87 +260,48 @@ export class MCPServer {
     return JSON.stringify(result, null, 2);
   }
 
+  /**
+   * One tool. Everything the five specialized tools did is reachable through it, and the
+   * split between them was actively harmful: it made the caller decide, before knowing the
+   * answer, whether a question was a search, a neighborhood, a path or an impact query — and
+   * every one of them except `explore_flow` needed an anchor that already resolved, so a
+   * question phrased in English ("how does crawling work") had to be turned into symbol names
+   * by a separate search call first. That round trip is where most failed queries died.
+   */
   private getToolsList() {
     return [
       {
-        name: 'search_symbols',
-        description: 'Resolve and search for symbols in the codebase graph by name or kind. When the query resolves to exactly one symbol, also returns its neighborhood (source, callsites, relationships) in the same call — set expand:false to get bare candidate info only, like a plain lookup.',
+        name: 'explore',
+        description:
+          'Answer any question about this codebase from its knowledge graph. Takes ONE free-form query — plain English ("how does crawling work", "what breaks if I change the resolver"), symbol/file names ("AnchorResolver compile.ts"), or any mix. It resolves the question as a whole to the set of symbols it is about (a concept spread across several functions anchors on all of them), traverses their neighborhoods, synthesizes the call paths connecting them, summarizes the blast radius, and returns their verbatim line-numbered source ranked to a token budget. This is the first thing to reach for instead of grep or reading files: one call usually answers the whole question. Questions about callers or breakage automatically trace incoming dependencies; everything else traverses both directions.',
         inputSchema: {
           type: 'object',
           properties: {
-            query: { type: 'string', description: 'Name, qualified name, or substring of symbol to search for' },
-            kind: { type: 'string', description: 'Optional filtering kind (e.g. class, function, method)' },
-            expand: { type: 'boolean', description: 'Explore the neighborhood when there is a single unambiguous match (default: true)' },
-            depth: { type: 'number', description: 'Neighborhood depth used when expand is true and there is a single match (default: 2)' }
-          },
-          required: ['query']
-        }
-      },
-      {
-        name: 'explore_region',
-        description: 'Explore the structural neighborhood (BFS) of a code anchor. The anchor accepts a plain symbol name, qualified name, substring, or loose/natural-language query — no exact node ID needed; the best match is auto-picked and noted, so you rarely need search_symbols first. Output self-caps to a token budget, so a broad depth/direction on a well-connected symbol degrades gracefully rather than failing.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            anchor: { type: 'string', description: 'Symbol name, qualified name, substring, or loose query. Exact node IDs also work and skip auto-pick.' },
-            direction: { type: 'string', enum: ['incoming', 'outgoing', 'both'], description: 'Traversal direction (default: outgoing)' },
-            depth: { type: 'number', description: 'Maximum search depth (default: 3)' },
-            edgeKinds: { type: 'array', items: { type: 'string' }, description: 'Optional edge-kind filter (e.g. ["call"]) to narrow a tangled neighborhood' }
-          },
-          required: ['anchor']
-        }
-      },
-      {
-        name: 'trace_path',
-        description: 'Find call/dependency paths between two symbols. Both endpoints accept a plain name, qualified name, or loose query — the best match for each is auto-picked, no exact IDs required.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            from: { type: 'string', description: 'Source symbol — name, qualified name, or loose query' },
-            to: { type: 'string', description: 'Target symbol — name, qualified name, or loose query' },
-            edgeKinds: { type: 'array', items: { type: 'string' }, description: 'Edge kinds to filter by' },
-            maxDepth: { type: 'number', description: 'Maximum traversal depth' }
-          },
-          required: ['from', 'to']
-        }
-      },
-      {
-        name: 'analyze_impact',
-        description: 'Identify the bounded dependency cone affected by modifying a symbol ("what breaks if I change this"). The anchor accepts a plain name, qualified name, or loose query — the best match is auto-picked, no exact ID required.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            anchor: { type: 'string', description: 'Symbol to analyze impact from — name, qualified name, or loose query' },
-            maxDepth: { type: 'number', description: 'Maximum depth of impact tracing' }
-          },
-          required: ['anchor']
-        }
-      },
-      {
-        name: 'explore_flow',
-        description: 'PRIMARY entry point — start here for almost any "how does X work" / "where is Y" / "how do these relate" question. Takes ONE free-form query string mixing symbol names, file names, and plain English however you like (e.g. "parseProject walker.ts how does the file walk work"). It fuzzily resolves the meaningful terms (ignoring prose filler), traverses from all of them at once, synthesizes the call/render paths connecting them, and returns their source ranked to a budget — replacing a search_symbols→explore_region loop with a single call. Use the narrower tools (explore_region/trace_path/analyze_impact) only when you already have an exact symbol and want a specific directed view.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Bag of symbol/file names or a loose natural-language query; each term is resolved independently and unresolvable ones are ignored' },
-            depth: { type: 'number', description: 'Neighborhood depth around each anchor (default: 1)' },
-            maxAnchors: { type: 'number', description: 'Maximum number of terms to resolve as anchors (default: 8)' }
-          },
-          required: ['query']
-        }
-      },
-      {
-        name: 'query_graph',
-        description: 'Execute a generalized typed GraphQueryPlan directly.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            plan: {
-              type: 'object',
-              description: 'The GraphQueryPlan structure containing operation, anchors, constraints, and materialize options.'
+            query: {
+              type: 'string',
+              description:
+                'The question, in whatever form is natural — prose, a bag of symbol/file names, or both. Terms that match nothing are ignored and reported.'
+            },
+            depth: {
+              type: 'number',
+              description: 'Neighborhood depth around each anchor. Defaults to what the question implies (1, or 2 for impact questions).'
+            },
+            direction: {
+              type: 'string',
+              enum: ['incoming', 'outgoing', 'both'],
+              description: 'Override the traversal direction. incoming = callers/dependents, outgoing = callees/dependencies.'
+            },
+            edgeKinds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional edge-kind filter (e.g. ["call"]) to narrow a tangled neighborhood.'
+            },
+            maxAnchors: {
+              type: 'number',
+              description: 'Ceiling on how many symbols to anchor on (default: 8).'
             }
           },
-          required: ['plan']
+          required: ['query']
         }
       }
     ];

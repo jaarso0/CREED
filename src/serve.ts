@@ -4,7 +4,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
-import { DB_FILENAME } from './storage/sqlite/db.js';
+import { DB_FILENAME, INDEX_DIR, LEGACY_INDEX_DIR } from './storage/sqlite/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,16 +31,19 @@ async function loadModelContent(targetPath: string): Promise<{ content: string; 
     return { content, source: targetPath };
   }
 
-  // Preferred: the SQLite index, at the target or one level up.
+  // Preferred: the SQLite index, at the target or one level up. The pre-rename directory
+  // is still checked so an existing checkout keeps rendering until it's re-indexed.
   const dbRoots = [targetPath, path.join(targetPath, '..')];
   for (const root of dbRoots) {
-    const dbPath = path.join(root, '.masai', DB_FILENAME);
-    const exists = await fs.stat(dbPath).then(s => s.isFile()).catch(() => false);
-    if (!exists) continue;
+    for (const dir of [INDEX_DIR, LEGACY_INDEX_DIR]) {
+      const dbPath = path.join(root, dir, DB_FILENAME);
+      const exists = await fs.stat(dbPath).then(s => s.isFile()).catch(() => false);
+      if (!exists) continue;
 
-    const storage = new SqliteSemanticModelStorage();
-    const model = await storage.load(root);
-    return { content: JSON.stringify(model), source: dbPath };
+      const storage = new SqliteSemanticModelStorage();
+      const model = await storage.load(root);
+      return { content: JSON.stringify(model), source: dbPath };
+    }
   }
 
   // Fallback: a JSON model written before the SQLite migration.
@@ -64,7 +67,7 @@ async function loadModelContent(targetPath: string): Promise<{ content: string; 
 
   throw new Error(
     `Could not locate a semantic model at or near "${targetPath}". ` +
-    `Expected .masai/${DB_FILENAME} (run the indexer first) or a legacy semantic-model.json.`
+    `Expected ${INDEX_DIR}/${DB_FILENAME} (run the indexer first) or a legacy semantic-model.json.`
   );
 }
 
@@ -196,7 +199,7 @@ export async function startServer(targetPath: string) {
   }
 
   console.log(`\n==================================================`);
-  console.log(` MASAI KG Visualizer running at: http://localhost:${port}`);
+  console.log(` Creed Visualizer running at: http://localhost:${port}`);
   console.log(`==================================================\n`);
 
   // Open default browser on Windows

@@ -44,7 +44,7 @@ beforeAll(async () => {
   // hiding a genuine divergence in the SQLite test-file predicate.)
   model = await pipeline.buildFull(path.resolve('.'));
 
-  tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'masai-equiv-'));
+  tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creed-equiv-'));
   await new SqliteSemanticModelStorage().save(model, tempRoot);
 
   memGraph = pipeline.deriveGraph(model);
@@ -218,6 +218,22 @@ describe('SqliteSymbolIndex matches RetrievalIndexes', () => {
         fmt(memIndex.matchByFilePath(token))
       );
     }
+  });
+
+  test('name-prefix seeks agree, including the LIKE metacharacters identifiers contain', () => {
+    // `_` is legal in identifiers and is also a LIKE wildcard, so an unescaped prefix would
+    // silently match more on the SQLite side than the in-memory startsWith ever would.
+    for (const prefix of ['re', 'sq', 'gr', 'zz', 'a_', 'x%', 'in']) {
+      const ids = (nodes: KGNode[]) => nodes.map(n => n.id).sort();
+      expect(ids(sqlIndex.namesStartingWith(prefix, 1000)), `prefix "${prefix}"`).toEqual(
+        ids(memIndex.namesStartingWith(prefix, 1000))
+      );
+    }
+  });
+
+  test('name-prefix seeks honour the limit', () => {
+    expect(sqlIndex.namesStartingWith('', 5).length).toBeLessThanOrEqual(5);
+    expect(memIndex.namesStartingWith('', 5).length).toBeLessThanOrEqual(5);
   });
 
   test('incoming edges agree for every node', () => {

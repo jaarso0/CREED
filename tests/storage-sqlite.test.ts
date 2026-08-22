@@ -18,7 +18,7 @@ import { SemanticModel } from '../src/semantic-model/types.js';
 const tempRoots: string[] = [];
 
 function makeTempRoot(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'masai-sqlite-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'creed-sqlite-'));
   tempRoots.push(dir);
   return dir;
 }
@@ -206,7 +206,7 @@ describe('SqliteSemanticModelStorage', () => {
 
   test('a database written by an older schema is rebuilt, not read as garbage', async () => {
     const root = makeTempRoot();
-    fs.mkdirSync(path.join(root, '.masai'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.creed'), { recursive: true });
 
     // Simulate a stale index from a previous schema version.
     const stale = new Database(getDatabasePath(root));

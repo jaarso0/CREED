@@ -10,8 +10,12 @@ import {
   compileExploreRegion,
   compileTracePath,
   compileAnalyzeImpact,
-  compileExploreFlow
+  compileExploreFlow,
+  compileExplore,
+  detectIntent
 } from '../src/mcp/compile.js';
+import { CandidateDiscovery, stemToken, levenshteinWithin } from '../src/retrieval/discovery.js';
+import { RetrievalIndexes } from '../src/retrieval/indexes.js';
 import { AnchorResolver } from '../src/resolution/anchor-resolver.js';
 import { GraphExecutor } from '../src/executor/graph-executor.js';
 import { EvidenceMaterializer } from '../src/evidence/materializer.js';
@@ -470,8 +474,11 @@ class CheckoutController {
     expect(res.serializedContext).toContain('2. `PaymentProcessor.charge`');
     // Blast radius section lists what depends on each queried symbol.
     expect(res.serializedContext).toContain('**Blast radius — what depends on these');
-    // Header states the query and the size of the result up front.
-    expect(res.serializedContext).toContain('**Exploration: runCheckout charge**');
+    // Header echoes the question *verbatim*, not the surviving anchor terms — reporting
+    // "Exploration: runCheckout charge" for a question that also said "data flow" misstates
+    // what was asked. What it actually anchored on is listed separately, below it.
+    expect(res.serializedContext).toContain('**Exploration: runCheckout charge data flow**');
+    expect(res.serializedContext).toContain('Anchored on: ');
     expect(res.serializedContext).toMatch(/Found \d+ symbol\(s\) across \d+ file\(s\)\./);
   });
 
@@ -514,4 +521,116 @@ class CheckoutController {
     );
     expect(res.status).toBe('not_found');
   });
+
+  test('reads impact intent off the question and flips the traversal', () => {
+    // With one tool there is no separate `analyze_impact` to carry this, so "what breaks"
+    // has to steer the traversal itself — otherwise it returns what the symbol calls, which
+    // is the exact opposite of what was asked.
+    expect(detectIntent('what breaks if I change charge')).toEqual({
+      direction: 'incoming',
+      depth: 2
+    });
+    expect(detectIntent('who calls charge')).toEqual({ direction: 'incoming', depth: 2 });
+    expect(detectIntent('how does checkout work')).toEqual({ direction: 'both', depth: 1 });
+
+    const plan = compileExplore({ query: 'what breaks if I change charge' });
+    expect(plan.constraints?.direction).toBe('incoming');
+    // Explicit arguments still win over the inferred intent.
+    expect(compileExplore({ query: 'who calls charge', direction: 'outgoing' }).constraints?.direction)
+      .toBe('outgoing');
+  });
+
+  test('a prose-only question compiles to a plan and still carries the full query', () => {
+    // Every word is filler, so no term survives as an identifier. The plan must still be
+    // valid (anchors is required non-empty) and must hand the whole question to the resolver.
+    const plan = compileExplore({ query: 'what happens when the work is done' });
+    expect(validateGraphQueryPlan(plan).valid).toBe(true);
+    expect(plan.constraints?.freeFormQuery).toBe('what happens when the work is done');
+  });
+
+  test('one concept anchors on every symbol it spans, not just the best-ranked one', async () => {
+    const controller = new RequestController(graph, TEMP_MCP_TEST_DIR);
+
+    // "payment" describes the class, its file, and its methods. Resolving each query word in
+    // isolation used to pick exactly one of them — or drop the term as ambiguous — which is
+    // how a question about a concept spread over several symbols returned a fraction of it.
+    const res = await controller.processPlan(compileExplore({ query: 'payment' }));
+
+    expect(res.status).toBe('success');
+    const anchorLine = res.serializedContext.split('\n').find((l: string) =>
+      l.startsWith('Anchored on: ')
+    );
+    expect(anchorLine).toBeDefined();
+    expect(anchorLine.split('`').length - 1).toBeGreaterThanOrEqual(4); // >= 2 anchors
+    expect(res.serializedContext).toContain('PaymentProcessor');
+  });
+
+  test('English morphology reaches the code\'s spelling', async () => {
+    const controller = new RequestController(graph, TEMP_MCP_TEST_DIR);
+    // "charging" is not a substring of `charge`, so a literal match finds nothing.
+    expect(stemToken('charging')).toBe('charg');
+
+    const res = await controller.processPlan(compileExplore({ query: 'how does charging work' }));
+    expect(res.status).toBe('success');
+    expect(res.serializedContext).toContain('charge');
+  });
+
+  test('a misspelled symbol name still resolves', async () => {
+    const controller = new RequestController(graph, TEMP_MCP_TEST_DIR);
+    // Transposition: no stem or prefix of "chagre" is a substring of "charge".
+    const res = await controller.processPlan(compileExplore({ query: 'chagre' }));
+    expect(res.status).toBe('success');
+    expect(res.serializedContext).toContain('charge');
+  });
+
+  test('edit distance bails out instead of scoring hopeless pairs', () => {
+    expect(levenshteinWithin('charge', 'chagre', 2)).toBe(2);
+    expect(levenshteinWithin('charge', 'charge', 2)).toBe(0);
+    expect(levenshteinWithin('charge', 'refund', 2)).toBeNull();
+    // Length gap alone exceeds the budget — rejected without building the matrix.
+    expect(levenshteinWithin('ab', 'abcdefgh', 2)).toBeNull();
+  });
+
+  test('generic vocabulary is searched rather than filtered into nothing', () => {
+    // `config` was an unconditional stopword, so the one-word query "config" tokenized to
+    // nothing and reported that no symbol matched — in a project whose central class is
+    // called exactly that.
+    const configClass = createSymbol({
+      filePath: 'settings.ts',
+      chain: ['Config'],
+      kind: 'class',
+      range: { start: { line: 0, column: 0 }, end: { line: 4, column: 1 } }
+    });
+    const tinyGraph = buildGraphFromModel({
+      ...model,
+      symbols: [configClass],
+      containments: [],
+      resolvedReferences: []
+    });
+    const configDiscovery = new CandidateDiscovery(new RetrievalIndexes(tinyGraph));
+    expect(configDiscovery.discover('config', 5).map(r => r.node.name)).toContain('Config');
+
+    // A generic word must still not outrank a specific one when both are present: the answer
+    // to "payment class" is the payment class, not every class in the project.
+    const discovery = new CandidateDiscovery(new RetrievalIndexes(graph));
+    expect(discovery.discover('payment class', 5)[0].node.name).toBe('PaymentProcessor');
+  });
+
+  test('a term that matched nothing is reported, a whole question that did is not', async () => {
+    const controller = new RequestController(graph, TEMP_MCP_TEST_DIR);
+
+    const mostlyNonsense = await controller.processPlan(
+      compileExplore({ query: 'charge zzznope quxbogus flarble' })
+    );
+    expect(mostlyNonsense.serializedContext).toContain('⚠ Low confidence:');
+
+    // Ordinary English around a real symbol is not a coverage problem, and warning about it
+    // on every good result is how a caller learns to ignore the warning.
+    const ordinary = await controller.processPlan(
+      compileExplore({ query: 'how does the checkout run' })
+    );
+    const footer = ordinary.serializedContext.split('\n---\n').slice(1).join('\n');
+    expect(footer).not.toContain('⚠ Low confidence:');
+  });
 });
+

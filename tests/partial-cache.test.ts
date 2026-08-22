@@ -52,12 +52,12 @@ function write(rel: string, content: string) {
 }
 
 beforeEach(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'masai-cache-'));
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'creed-cache-'));
   for (const [rel, content] of Object.entries(FILES)) write(rel, content);
 });
 
 afterEach(() => {
-  delete process.env.MASAI_NO_CACHE;
+  delete process.env.CREED_NO_CACHE;
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -114,9 +114,9 @@ describe('partial cache', () => {
     const incremental = await buildWithCache();
 
     // Same sources, no cache at all.
-    process.env.MASAI_NO_CACHE = '1';
+    process.env.CREED_NO_CACHE = '1';
     const cold = await buildWithCache();
-    delete process.env.MASAI_NO_CACHE;
+    delete process.env.CREED_NO_CACHE;
 
     expect(cold.stats.parsed).toBe(3);
     expect(comparable(incremental.model)).toEqual(comparable(cold.model));
@@ -171,9 +171,9 @@ describe('partial cache', () => {
     expect(after.stats.parsed).toBe(3);
   });
 
-  test('MASAI_NO_CACHE=1 bypasses the cache', async () => {
+  test('CREED_NO_CACHE=1 bypasses the cache', async () => {
     await buildWithCache();
-    process.env.MASAI_NO_CACHE = '1';
+    process.env.CREED_NO_CACHE = '1';
     const after = await buildWithCache();
     expect(after.stats.reused).toBe(0);
     expect(after.stats.parsed).toBe(3);

@@ -19,7 +19,7 @@ interface EdgeRow {
 }
 
 /**
- * A `ReadableGraph` served directly from `.masai/graph.db`.
+ * A `ReadableGraph` served directly from `.creed/graph.db`.
  *
  * The in-memory `KnowledgeGraph` holds every node and edge in four Maps, which is
  * what caps the size of codebase this can index — a 400k-symbol corpus costs

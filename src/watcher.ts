@@ -7,7 +7,7 @@ import { ReadableGraph } from './graph/graph.js';
 import { SemanticModel } from './semantic-model/types.js';
 
 const WATCH_IGNORE = new Set([
-  'node_modules', 'dist', 'build', '.git', '.masai',
+  'node_modules', 'dist', 'build', '.git', '.creed', '.masai',
   '__pycache__', 'venv', '.venv', 'env', '.env'
 ]);
 

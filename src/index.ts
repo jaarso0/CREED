@@ -28,7 +28,7 @@ export { SqliteKnowledgeGraph } from './graph/sqlite-graph.js';
 export { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
 export { SqlitePartialCache, hashSource } from './storage/sqlite/partial-cache.js';
 export type { FileRecord, PartialCache } from './storage/sqlite/partial-cache.js';
-export { openDatabase, getDatabasePath, databaseExists } from './storage/sqlite/db.js';
+export { openDatabase, getDatabasePath, databaseExists, INDEX_DIR, DB_FILENAME } from './storage/sqlite/db.js';
 export { SCHEMA_VERSION, PIPELINE_VERSION } from './storage/sqlite/schema.js';
 export { JsonSemanticModelStorage } from './storage/semantic-model-storage.js';
 
@@ -55,7 +55,7 @@ async function runSetup() {
   console.log(` Creed MCP Setup Wizard`);
   console.log(`==================================================\n`);
 
-  const defaultDir = process.cwd();
+  const defaultDir = findProjectRoot();
   const inputDir = await question(`Enter the absolute path of the directory to index [${defaultDir}]: `);
   const targetDir = path.resolve(inputDir.trim() || defaultDir);
   rl.close();
@@ -88,11 +88,13 @@ async function runSetup() {
       config.mcpServers = {};
     }
 
+    // The published package is `creed-kg` — `creed` is an unrelated 2018 async library, so
+    // naming it here would have had npx install and run entirely the wrong thing.
     config.mcpServers['creed'] = {
       command: 'npx',
       args: [
         '-y',
-        'creed',
+        'creed-kg',
         'mcp',
         targetDir
       ]
@@ -107,6 +109,54 @@ async function runSetup() {
   }
 }
 
+/**
+ * Files that mark the root of a project. Checked while walking up from the working
+ * directory, nearest first — so inside a monorepo package you get that package, not the
+ * whole repository, which is almost always the scope you meant to index.
+ */
+const PROJECT_MARKERS = [
+  '.creed', '.masai', '.git', 'package.json', 'pyproject.toml', 'requirements.txt', 'setup.py',
+  'go.mod', 'Cargo.toml', 'pom.xml', 'build.gradle', 'tsconfig.json', 'deno.json'
+];
+
+/**
+ * Works out which project to operate on when no path was given.
+ *
+ * MCP clients spawn the server themselves, and the working directory they pick is theirs to
+ * choose — so trusting `process.cwd()` blindly meant every config had to hard-code an
+ * absolute path, per project, by hand. Walking up to a project marker removes that: the
+ * same path-less config block works in every repository, and can be installed once globally.
+ *
+ * Falls back to the starting directory when nothing is found, which is the old behaviour.
+ */
+export function findProjectRoot(startDir: string = process.cwd()): string {
+  const start = path.resolve(startDir);
+  const { root } = path.parse(start);
+  const home = os.homedir();
+
+  let dir = start;
+  while (true) {
+    // The home directory and the filesystem root are never inferred as project roots. Plenty
+    // of people have a stray package.json or a dotfiles .git in $HOME, and walking up into it
+    // would quietly point Creed at every file they own. Only honoured when the user named
+    // that directory themselves.
+    const atBoundary = dir === home || dir === root;
+
+    if (!atBoundary || dir === start) {
+      // A package.json inside node_modules is a dependency's, never the user's project.
+      const insideDeps = dir.split(path.sep).includes('node_modules');
+      if (!insideDeps && PROJECT_MARKERS.some(m => fsSync.existsSync(path.join(dir, m)))) {
+        return dir;
+      }
+    }
+
+    if (atBoundary) return start;
+    const parent = path.dirname(dir);
+    if (parent === dir) return start;
+    dir = parent;
+  }
+}
+
 function printUsage(): void {
   console.log(`
 Creed — a knowledge graph of your codebase, for AI coding agents.
@@ -114,21 +164,31 @@ Creed — a knowledge graph of your codebase, for AI coding agents.
 Usage: creed-kg <command> [options]
 
 Commands:
+  init                   Index this repo and connect it to your editors — start here
   query "<question>"     Ask about your codebase and print the answer
   mcp [dir]              Run as an MCP server (for Claude Code, Cursor, Kiro, ...)
   serve [dir]            Open the interactive graph explorer in a browser
   setup                  Write the Claude Desktop MCP config for you
   [dir]                  Index a directory and print a report (default)
 
+[dir] is optional everywhere. Omitted, Creed walks up from the working directory to
+the nearest project root (.git, package.json, pyproject.toml, ...) — so the same
+config works in every repo without hard-coding a path.
+
 Options:
-  --path, -p <dir>       Project directory for \`query\` (default: current directory)
+  --path, -p <dir>       Project directory (for \`init\` and \`query\`)
+  --all                  init: configure every supported editor, not just detected ones
+  --editor, -e <id>      init: configure a specific editor
+                         (claude-code, cursor, vscode, kiro, gemini)
+  --no-index             init: write configs only, skip building the index
   --help, -h             Show this message
 
 Examples:
+  creed-kg init
   creed-kg query "how does authentication work"
   creed-kg query "UserService save" --path ./backend
-  creed-kg mcp .
-  creed-kg .
+  creed-kg init --all
+  creed-kg mcp
 `);
 }
 
@@ -152,12 +212,44 @@ async function runCLI() {
     return;
   }
 
+  if (command === 'init') {
+    const rest = args.slice(1);
+    let targetDir = findProjectRoot();
+    const pathFlag = rest.findIndex(a => a === '--path' || a === '-p');
+    if (pathFlag !== -1) {
+      targetDir = path.resolve(rest[pathFlag + 1] || '.');
+      rest.splice(pathFlag, 2);
+    }
+
+    const editors: string[] = [];
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--editor' || rest[i] === '-e') {
+        if (rest[i + 1]) editors.push(rest[i + 1]);
+        i++;
+      }
+    }
+
+    try {
+      const { runInit } = await import('./init.js');
+      await runInit({
+        projectRoot: targetDir,
+        all: rest.includes('--all'),
+        editors,
+        skipIndex: rest.includes('--no-index')
+      });
+    } catch (err: any) {
+      console.error(`\n❌ init failed:`, err.message || err);
+      process.exit(1);
+    }
+    return;
+  }
+
   if (command === 'query' || command === 'ask') {
     // One-shot version of the `explore_flow` MCP tool, so the graph is usable straight after
     // install without wiring up an editor first. Indexes (reusing the cache, so it's near
     // instant on a warm project), runs the query, prints the same markdown an agent receives.
     const rest = args.slice(1);
-    let targetDir = process.cwd();
+    let targetDir = findProjectRoot();
     const pathFlag = rest.findIndex(a => a === '--path' || a === '-p');
     if (pathFlag !== -1) {
       targetDir = path.resolve(rest[pathFlag + 1] || '.');
@@ -213,7 +305,7 @@ async function runCLI() {
   }
 
   if (command === 'serve' || command === 'visualize') {
-    const targetDir = args[1] ? path.resolve(args[1]) : process.cwd();
+    const targetDir = args[1] ? path.resolve(args[1]) : findProjectRoot();
     try {
       await startServer(targetDir);
     } catch (err: any) {
@@ -224,7 +316,7 @@ async function runCLI() {
   }
 
   if (command === 'mcp') {
-    const targetDir = args[1] ? path.resolve(args[1]) : process.cwd();
+    const targetDir = args[1] ? path.resolve(args[1]) : findProjectRoot();
     try {
       const storage = new SqliteSemanticModelStorage();
       const pipeline = new Pipeline();
@@ -255,7 +347,7 @@ async function runCLI() {
 
       // Serve the graph out of SQLite rather than the in-memory model. The model
       // object built above is released once this scope exits; from here on, node and
-      // edge lookups are indexed reads against .masai/graph.db, so resident memory
+      // edge lookups are indexed reads against .creed/graph.db, so resident memory
       // tracks what queries touch instead of the size of the repository.
       const { SqliteKnowledgeGraph } = await import('./graph/sqlite-graph.js');
       const { SqliteSymbolIndex } = await import('./retrieval/sqlite-symbol-index.js');
@@ -296,7 +388,7 @@ async function runCLI() {
     process.exit(1);
   }
 
-  const targetDir = args[0] ? path.resolve(args[0]) : process.cwd();
+  const targetDir = args[0] ? path.resolve(args[0]) : findProjectRoot();
 
   console.log(`\n==================================================`);
   console.log(` Creed — Knowledge Graph Builder`);

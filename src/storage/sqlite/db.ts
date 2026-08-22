@@ -7,9 +7,23 @@ export type { Database } from 'better-sqlite3';
 
 export const DB_FILENAME = 'graph.db';
 
+/** Directory Creed keeps its index in, at the project root. */
+export const INDEX_DIR = '.creed';
+
+/**
+ * Directory used before the project was renamed. Still recognised when reading so an
+ * existing checkout keeps working, but never written to.
+ */
+export const LEGACY_INDEX_DIR = '.masai';
+
 /** Absolute path to a project's graph database. */
 export function getDatabasePath(projectRoot: string): string {
-  return path.join(projectRoot, '.masai', DB_FILENAME);
+  return path.join(projectRoot, INDEX_DIR, DB_FILENAME);
+}
+
+/** Absolute path to a pre-rename index, if the project still has one. */
+export function getLegacyDatabasePath(projectRoot: string): string {
+  return path.join(projectRoot, LEGACY_INDEX_DIR, DB_FILENAME);
 }
 
 /** True if a project has already been indexed into SQLite. */
@@ -37,8 +51,12 @@ export function openDatabase(projectRoot: string, options: OpenOptions = {}): Da
     // "Cannot open database because the directory does not exist", which says nothing about
     // needing to index the project — and this is the very first thing a new consumer hits.
     if (!fs.existsSync(dbPath)) {
+      const hadLegacy = fs.existsSync(getLegacyDatabasePath(projectRoot));
       throw new Error(
         `No Creed index found at ${dbPath}. ` +
+        (hadLegacy
+          ? `A pre-rename index exists at ${LEGACY_INDEX_DIR}/ — re-index to migrate it, then delete that folder. `
+          : '') +
         `Index the project first — run \`npx creed-kg ${projectRoot}\`, or build and save a ` +
         `model with Pipeline.build() + SqliteSemanticModelStorage.save().`
       );

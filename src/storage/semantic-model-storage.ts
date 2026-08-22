@@ -22,7 +22,7 @@ export class JsonSemanticModelStorage implements SemanticModelStorage {
     const storagePath = this.getStoragePath(projectRoot);
     const dir = path.dirname(storagePath);
     
-    // Ensure .masai folder exists
+    // Ensure the legacy .masai folder exists
     await fs.mkdir(dir, { recursive: true });
 
     // Format JSON with 2 spaces for human-readability as requested in manual verification plan

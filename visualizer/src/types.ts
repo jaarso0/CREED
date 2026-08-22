@@ -57,7 +57,8 @@ export type ReferenceKind =
   | 'inherit'
   | 'implement'
   | 'type_use'
-  | 'instantiate';
+  | 'instantiate'
+  | 'renders';
 
 export interface ReferenceCandidate {
   id: string;

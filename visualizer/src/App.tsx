@@ -1,16 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
-import {
-  ReactFlow,
-  MiniMap,
-  Controls,
-  Background,
-  useNodesState,
-  useEdgesState,
-  useReactFlow,
-  ReactFlowProvider,
-  Node as RFNode,
-  Edge as RFEdge,
-} from '@xyflow/react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Search,
   Activity,
@@ -33,14 +21,19 @@ import {
   buildServiceGraph,
   buildApiGraph,
   buildDataGraph,
-  traceFlow
-} from './utils/graph-builder';
-import { CustomNode, FileGroupNode, ClassGroupNode, getSymbolTheme } from './components/CustomNode';
+  traceFlow,
+  SemanticGraph,
+} from './utils/graph-model';
+import { getSymbolTheme } from './components/symbol-theme';
+import { ForceGraphCanvas, FocusRequest } from './components/ForceGraphCanvas';
 
-const nodeTypes = {
-  customNode: CustomNode,
-  fileGroup: FileGroupNode,
-  classGroup: ClassGroupNode,
+const EMPTY_GRAPH: SemanticGraph = {
+  nodes: [],
+  links: [],
+  nodeById: new Map(),
+  parentOf: new Map(),
+  childrenOf: new Map(),
+  neighborsOf: new Map(),
 };
 
 function LegendSection() {
@@ -100,6 +93,11 @@ function LegendSection() {
               </div>
             ))}
           </div>
+          <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.5 }}>
+            Arrowheads point from caller → callee. Hover or click a node to dim the graph down to
+            that node and its direct neighbours. The graph opens at module level — a dashed ring
+            means a node still holds hidden symbols; click it or zoom in to reveal them.
+          </div>
         </div>
       </div>
     </div>
@@ -107,8 +105,6 @@ function LegendSection() {
 }
 
 function VisualizerDashboard() {
-  const { fitView, setCenter } = useReactFlow();
-
   // Model & Loading state
   const [model, setModel] = useState<SemanticModel | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -122,6 +118,10 @@ function VisualizerDashboard() {
   // Interactive selection state
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [neighborhoodNodeId, setNeighborhoodNodeId] = useState<string | null>(null);
+
+  // Viewport centering requests raised from the sidebars (the canvas owns positions)
+  const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
+  const focusNonce = useRef(0);
 
   // View mode selection
   type ViewMode = 'flat' | 'module' | 'service' | 'api' | 'data';
@@ -162,26 +162,6 @@ function VisualizerDashboard() {
     if (!model) return map;
     for (const sym of model.symbols) {
       map.set(sym.id, sym);
-    }
-    return map;
-  }, [model]);
-
-  const parentToChildren = useMemo(() => {
-    const map = new Map<string, string[]>();
-    if (!model) return map;
-    for (const c of model.containments) {
-      const list = map.get(c.parentId) || [];
-      list.push(c.childId);
-      map.set(c.parentId, list);
-    }
-    return map;
-  }, [model]);
-
-  const childToParent = useMemo(() => {
-    const map = new Map<string, string>();
-    if (!model) return map;
-    for (const c of model.containments) {
-      map.set(c.childId, c.parentId);
     }
     return map;
   }, [model]);
@@ -228,9 +208,10 @@ function VisualizerDashboard() {
     return { kinds: kindCounts, edges: edgeCounts };
   }, [model]);
 
-  // Translate semantic-model to RF nodes/edges depending on view mode and active flow trace
-  const currentGraph = useMemo(() => {
-    if (!model) return { nodes: [], edges: [] };
+  // Build the graph for the active view mode / flow trace. Level of detail and
+  // filtering are applied by the canvas on top of this.
+  const currentGraph = useMemo<SemanticGraph>(() => {
+    if (!model) return EMPTY_GRAPH;
 
     if (activeTraceStartId) {
       return traceFlow(model, activeTraceStartId, traceDepth);
@@ -251,208 +232,12 @@ function VisualizerDashboard() {
     }
   }, [model, viewMode, activeTraceStartId, traceDepth]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<RFEdge>([]);
-
-  // Sync graph state on currentGraph change
-  useEffect(() => {
-    if (currentGraph.nodes.length > 0) {
-      setNodes(currentGraph.nodes);
-      setEdges(currentGraph.edges);
-      // Wait minor tick for renders
-      setTimeout(() => fitView({ padding: 0.1, duration: 800 }), 50);
-    } else {
-      setNodes([]);
-      setEdges([]);
-    }
-  }, [currentGraph, fitView, setNodes, setEdges]);
-
-  // Compute connections in Neighborhood Mode
-  const connectedNodeIds = useMemo(() => {
-    const ids = new Set<string>();
-    if (!neighborhoodNodeId || !model) return ids;
-
-    // Direct callers and callees
-    for (const ref of model.resolvedReferences) {
-      if (ref.fromSymbolId === neighborhoodNodeId) {
-        ids.add(ref.toSymbolId);
-      }
-      if (ref.toSymbolId === neighborhoodNodeId) {
-        ids.add(ref.fromSymbolId);
-      }
-    }
-
-    // Direct children (if neighborhood target is a class/file)
-    const children = parentToChildren.get(neighborhoodNodeId) || [];
-    for (const childId of children) {
-      ids.add(childId);
-    }
-
-    // Direct parent
-    const parentId = childToParent.get(neighborhoodNodeId);
-    if (parentId) ids.add(parentId);
-
-    return ids;
-  }, [neighborhoodNodeId, model, parentToChildren, childToParent]);
-
-  // Evaluate final visibility of nodes based on active filters, search and neighborhood
-  const visibleNodesMap = useMemo(() => {
-    const visibility = new Map<string, boolean>();
-    if (!model || nodes.length === 0) return visibility;
-
-    const nodeMap = new Map<string, RFNode>();
-    for (const node of nodes) {
-      nodeMap.set(node.id, node);
-    }
-
-    // Helper to evaluate nodes recursively
-    function isNodeVisible(nodeId: string): boolean {
-      const cache = visibility.get(nodeId);
-      if (cache !== undefined) return cache;
-
-      if (activeTraceStartId) {
-        visibility.set(nodeId, true);
-        return true;
-      }
-
-      const node = nodeMap.get(nodeId);
-      if (!node) {
-        visibility.set(nodeId, false);
-        return false;
-      }
-
-      const symbol = (node.data as any).symbol as Symbol;
-      if (!symbol) {
-        visibility.set(nodeId, false);
-        return false;
-      }
-
-      // If in neighborhood mode, enforce isolation
-      if (neighborhoodNodeId) {
-        const isSelf = nodeId === neighborhoodNodeId;
-        const isNeighbor = connectedNodeIds.has(nodeId);
-        
-        if (isSelf || isNeighbor) {
-          visibility.set(nodeId, true);
-          return true;
-        }
-
-        // Parent container of neighborhood anchor/neighbors must be shown so children render inside it
-        const children = parentToChildren.get(nodeId) || [];
-        const hasVisibleChild = children.some((cId) => {
-          return cId === neighborhoodNodeId || connectedNodeIds.has(cId);
-        });
-        if (hasVisibleChild) {
-          visibility.set(nodeId, true);
-          return true;
-        }
-
-        visibility.set(nodeId, false);
-        return false;
-      }
-
-      // Default filter and search
-      // Leaf symbols
-      const isContainer = symbol.kind === 'file' || symbol.kind === 'class' || symbol.kind === 'interface' || symbol.kind === 'struct';
-      if (!isContainer) {
-        const matchesSearch =
-          symbol.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          symbol.qualifiedName.toLowerCase().includes(searchTerm.toLowerCase());
-        const matchesKind = selectedKinds.has(symbol.kind);
-        const active = matchesSearch && matchesKind;
-        visibility.set(nodeId, active);
-        return active;
-      }
-
-      // Group nodes: show if name matches OR if any contained sub-elements match
-      const matchesSelf =
-        (symbol.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          symbol.qualifiedName.toLowerCase().includes(searchTerm.toLowerCase())) &&
-        selectedKinds.has(symbol.kind);
-
-      if (matchesSelf) {
-        visibility.set(nodeId, true);
-        return true;
-      }
-
-      const children = parentToChildren.get(nodeId) || [];
-      const hasVisibleChild = children.some((childId) => isNodeVisible(childId));
-      visibility.set(nodeId, hasVisibleChild);
-      return hasVisibleChild;
-    }
-
-    for (const node of nodes) {
-      isNodeVisible(node.id);
-    }
-
-    return visibility;
-  }, [nodes, model, searchTerm, selectedKinds, neighborhoodNodeId, connectedNodeIds, parentToChildren, symbolMap]);
-
-  // Computed layout state mapping nodes & edges visible flags
-  const displayNodes = useMemo(() => {
-    return nodes.map((node) => ({
-      ...node,
-      hidden: !visibleNodesMap.get(node.id),
-      selected: node.id === selectedNodeId,
-    }));
-  }, [nodes, visibleNodesMap, selectedNodeId]);
-
-  const displayEdges = useMemo(() => {
-    return edges.map((edge) => {
-      const sourceVisible = visibleNodesMap.get(edge.source);
-      const targetVisible = visibleNodesMap.get(edge.target);
-      const edgeFilterMatch = selectedEdgeKinds.has(edge.label as string);
-
-      // Hide edges if endpoints are filtered out
-      const isHidden = !sourceVisible || !targetVisible || !edgeFilterMatch;
-
-      return {
-        ...edge,
-        hidden: isHidden,
-      };
-    });
-  }, [edges, visibleNodesMap, selectedEdgeKinds]);
-
-  // Handle sidebar navigation click
-  const selectAndFocusNode = useCallback(
-    (id: string) => {
-      setSelectedNodeId(id);
-      const node = nodes.find((n) => n.id === id);
-      if (node) {
-        // Find absolute canvas coordinates of the node.
-        // If nested, we walk up parent relative offsets
-        let x = node.position.x;
-        let y = node.position.y;
-        let currentParentId = node.parentId;
-
-        while (currentParentId) {
-          const parentNode = nodes.find((n) => n.id === currentParentId);
-          if (parentNode) {
-            x += parentNode.position.x;
-            y += parentNode.position.y;
-            currentParentId = parentNode.parentId;
-          } else {
-            break;
-          }
-        }
-
-        // Center on node
-        setCenter(x + 90, y + 20, { zoom: 1.25, duration: 800 });
-      }
-    },
-    [nodes, setCenter],
-  );
-
-  // Custom node selection handler
-  const onNodeClick = useCallback(
-    (_event: React.MouseEvent, node: RFNode) => {
-      setSelectedNodeId(node.id);
-    },
-    [],
-  );
-
-  const onPaneClick = useCallback(() => {
-    setSelectedNodeId(null);
+  // Handle sidebar navigation click — the canvas owns live positions, so we just
+  // raise a focus request and let it do the centering.
+  const selectAndFocusNode = useCallback((id: string) => {
+    setSelectedNodeId(id);
+    focusNonce.current += 1;
+    setFocusRequest({ id, nonce: focusNonce.current });
   }, []);
 
   // Filter handlers
@@ -479,12 +264,9 @@ function VisualizerDashboard() {
   // Node Inspector selection
   const selectedSymbol = useMemo(() => {
     if (!selectedNodeId) return null;
-    const activeNode = nodes.find(n => n.id === selectedNodeId);
-    if (activeNode && (activeNode.data as any)?.symbol) {
-      return (activeNode.data as any).symbol as Symbol;
-    }
-    return symbolMap.get(selectedNodeId) || null;
-  }, [selectedNodeId, nodes, symbolMap]);
+    const node = currentGraph.nodeById.get(selectedNodeId);
+    return node?.symbol ?? symbolMap.get(selectedNodeId) ?? null;
+  }, [selectedNodeId, currentGraph, symbolMap]);
 
   const selectedRelations = useMemo(() => {
     if (!selectedNodeId) return null;
@@ -813,34 +595,16 @@ function VisualizerDashboard() {
           </div>
         )}
 
-        <ReactFlow
-          nodes={displayNodes}
-          edges={displayEdges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          nodeTypes={nodeTypes}
-          onNodeClick={onNodeClick}
-          onPaneClick={onPaneClick}
-          fitView
-          minZoom={0.05}
-          maxZoom={2}
-        >
-          <Background color="#1e293b" gap={20} size={1} />
-          <Controls style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }} />
-          <MiniMap
-            style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }}
-            nodeStrokeColor={(n) => {
-              if (n.type === 'fileGroup') return 'var(--color-file)';
-              if (n.type === 'classGroup') return 'var(--color-class)';
-              return '#3b82f6';
-            }}
-            nodeColor={(n) => {
-              if (n.type === 'fileGroup') return 'rgba(14, 165, 233, 0.05)';
-              if (n.type === 'classGroup') return 'rgba(168, 85, 247, 0.05)';
-              return '#0f172a';
-            }}
-          />
-        </ReactFlow>
+        <ForceGraphCanvas
+          graph={currentGraph}
+          searchTerm={searchTerm}
+          selectedKinds={selectedKinds}
+          selectedEdgeKinds={selectedEdgeKinds}
+          neighborhoodNodeId={neighborhoodNodeId}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={setSelectedNodeId}
+          focusRequest={focusRequest}
+        />
       </main>
 
       {/* RIGHT SIDEBAR: Symbol Details / Inspector */}
@@ -1033,9 +797,5 @@ function VisualizerDashboard() {
 }
 
 export default function App() {
-  return (
-    <ReactFlowProvider>
-      <VisualizerDashboard />
-    </ReactFlowProvider>
-  );
+  return <VisualizerDashboard />;
 }

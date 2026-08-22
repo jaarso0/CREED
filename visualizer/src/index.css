@@ -451,135 +451,6 @@ body {
   background: rgba(255, 255, 255, 0.1);
 }
 
-/* Custom React Flow Node Styling */
-.react-flow__node {
-  border-radius: 8px;
-  transition: box-shadow 0.2s ease;
-}
-
-.custom-node {
-  background: #0f172a;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 8px;
-  padding: 10px 12px;
-  width: 180px;
-  min-height: 42px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text-primary);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-  position: relative;
-  transition: all 0.2s ease;
-}
-
-.custom-node:hover {
-  border-color: rgba(255, 255, 255, 0.35);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-}
-
-.custom-node.selected {
-  border-color: #3b82f6 !important;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5), 0 4px 15px rgba(0, 0, 0, 0.4);
-}
-
-.custom-node-icon {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  flex-shrink: 0;
-}
-
-.custom-node-content {
-  flex: 1;
-  min-width: 0;
-}
-
-.custom-node-name {
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.custom-node-kind {
-  font-size: 9px;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  margin-top: 1px;
-}
-
-/* Group Nodes Styles */
-.file-group-node {
-  background: rgba(14, 165, 233, 0.03);
-  border: 2px dashed rgba(14, 165, 233, 0.35);
-  border-radius: 12px;
-  padding: 14px;
-  color: var(--text-primary);
-  font-size: 13px;
-  pointer-events: all !important;
-}
-
-.file-group-node.selected {
-  border-color: rgba(14, 165, 233, 0.8) !important;
-  background: rgba(14, 165, 233, 0.06);
-}
-
-.group-title {
-  font-family: var(--font-title);
-  font-weight: 700;
-  color: #0ea5e9;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.class-group-node {
-  background: rgba(168, 85, 247, 0.03);
-  border: 2px solid rgba(168, 85, 247, 0.35);
-  border-radius: 10px;
-  padding: 10px;
-  pointer-events: all !important;
-}
-
-.class-group-node.selected {
-  border-color: rgba(168, 85, 247, 0.8) !important;
-  background: rgba(168, 85, 247, 0.06);
-}
-
-.class-group-title {
-  font-family: var(--font-title);
-  font-weight: 700;
-  font-size: 12px;
-  color: #a855f7;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-/* Handles styling */
-.react-flow__handle {
-  width: 6px !important;
-  height: 6px !important;
-  background: #64748b !important;
-  border: 1px solid #0f172a !important;
-  transition: all 0.15s ease;
-}
-
-.react-flow__handle:hover {
-  background: #3b82f6 !important;
-  transform: scale(1.3);
-}
-
 /* Loading Overlay */
 .loading-overlay {
   position: absolute;
@@ -694,23 +565,77 @@ body {
 }
 
 /* ════════════════════════════════════════════
-   ACTIVE TRACE FLOW EDGE STYLING
+   PHYSICS TOOLBAR
    ════════════════════════════════════════════ */
-@keyframes flow-trace {
-  from {
-    stroke-dashoffset: 20;
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
+.physics-toolbar {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  z-index: 5;
+  display: flex;
+  gap: 6px;
 }
 
-.animated-trace-edge path.react-flow__edge-path {
-  stroke-dasharray: 8 5;
-  animation: flow-trace 0.6s linear infinite !important;
-}
-
-.animated-trace-edge path.react-flow__edge-interaction {
+.physics-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-family: var(--font-family);
+  font-size: 11px;
+  font-weight: 600;
   cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: all 0.15s ease;
 }
 
+.physics-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+  background: rgba(30, 41, 59, 0.85);
+}
+
+.physics-btn.active {
+  color: #93c5fd;
+  border-color: rgba(59, 130, 246, 0.4);
+  background: rgba(59, 130, 246, 0.15);
+}
+
+
+.graph-stat-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* ════════════════════════════════════════════
+   CANVAS GRAPH
+   ════════════════════════════════════════════ */
+.force-canvas {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.force-canvas canvas {
+  display: block;
+  cursor: grab;
+}
+
+.force-canvas canvas.grabbable {
+  cursor: grabbing;
+}

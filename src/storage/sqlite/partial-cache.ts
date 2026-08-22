@@ -36,7 +36,7 @@ export function decodePartial(blob: Buffer): PartialSemanticModel {
 }
 
 /**
- * Serves cached per-file parse output from `.masai/graph.db`.
+ * Serves cached per-file parse output from `.creed/graph.db`.
  *
  * Two guards, both necessary:
  *  - the content hash proves the file's *input* is unchanged;
@@ -44,7 +44,7 @@ export function decodePartial(blob: Buffer): PartialSemanticModel {
  * Without the second, an extractor change would keep serving stale partials for every
  * file that happened not to be edited.
  *
- * Set MASAI_NO_CACHE=1 to bypass entirely and force a full re-parse.
+ * Set CREED_NO_CACHE=1 to bypass entirely and force a full re-parse.
  */
 export class SqlitePartialCache implements PartialCache {
   private db: Database | null = null;
@@ -55,7 +55,9 @@ export class SqlitePartialCache implements PartialCache {
   public misses = 0;
 
   constructor(projectRoot: string) {
-    if (process.env.MASAI_NO_CACHE === '1') return;
+    // MASAI_NO_CACHE is the pre-rename name, still honoured so existing scripts don't
+    // silently start using a cache they were deliberately bypassing.
+    if (process.env.CREED_NO_CACHE === '1' || process.env.MASAI_NO_CACHE === '1') return;
     if (!databaseExists(projectRoot)) return;
 
     try {

@@ -27,7 +27,7 @@ import {
 
 /**
  * Persists the SemanticModel to a normalized, indexed SQLite database at
- * `.masai/graph.db`, replacing the single pretty-printed JSON document.
+ * `.creed/graph.db`, replacing the single pretty-printed JSON document.
  *
  * Implements the same `SemanticModelStorage` contract as the JSON version and
  * returns a structurally identical `SemanticModel` from `load()`, so every
