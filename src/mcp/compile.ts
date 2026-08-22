@@ -4,21 +4,19 @@ import {
   ExploreRegionArgs,
   TracePathArgs,
   AnalyzeImpactArgs,
+  ExploreArgs,
   ExploreFlowArgs
 } from './types.js';
+import { HARD_STOPWORDS, WEAK_TERMS } from '../retrieval/discovery.js';
 
-// Common English / prose words that are never the symbol you mean in a free-form query.
-// Not exhaustive — the identifier-shape heuristic below does most of the work; this just
-// catches plain lowercase words (which the shape rule can't distinguish from real symbols).
+// Prose that is never the symbol you mean. Shared with CandidateDiscovery rather than kept
+// as a second list here: the two drifted, and the drift was visible in the output — a word
+// this file admitted as an anchor but discovery discarded as filler ("breaks", "happens")
+// resolved to nothing and was then reported to the caller as a term that matched nothing.
 const FLOW_STOPWORDS = new Set([
-  'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'how', 'does', 'do',
-  'did', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'flow', 'data', 'across', 'through',
-  'from', 'into', 'onto', 'between', 'via', 'work', 'works', 'working', 'file', 'files', 'use',
-  'uses', 'used', 'using', 'get', 'gets', 'set', 'sets', 'make', 'makes', 'made', 'why', 'what',
-  'when', 'where', 'which', 'who', 'this', 'that', 'these', 'those', 'it', 'its', 'we', 'you',
-  'they', 'them', 'i', 'can', 'could', 'should', 'would', 'will', 'shall', 'may', 'might', 'must',
-  'way', 'ways', 'thing', 'things', 'code', 'about', 'over', 'under', 'out', 'up', 'down', 'off',
-  'then', 'else', 'so', 'than', 'as', 'at', 'by', 'but', 'if', 'not', 'all', 'any', 'each'
+  ...HARD_STOPWORDS,
+  ...WEAK_TERMS,
+  'across', 'through', 'between', 'out'
 ]);
 
 // A token is worth resolving as an anchor if it *looks like* a code identifier — camelCase /
@@ -33,20 +31,62 @@ function looksLikeAnchor(token: string): boolean {
   return !FLOW_STOPWORDS.has(token);                 // plain lowercase word, not filler
 }
 
-export function compileExploreFlow(args: ExploreFlowArgs): GraphQueryPlan {
-  const maxAnchors = args.maxAnchors ?? 8;
-  const terms = args.query
+/** Identifier-shaped terms worth resolving exactly, before ranking gets a say. */
+function identifierTerms(query: string, max: number): string[] {
+  return query
     .split(/\s+/)
     .map(t => t.trim().replace(/[?!,;:()"']+$/g, '').replace(/^["'(]+/g, ''))
     .filter(looksLikeAnchor)
-    .slice(0, maxAnchors);
+    .slice(0, max);
+}
+
+/**
+ * What shape of answer the question is asking for.
+ *
+ * "what breaks if I change X" and "how does X work" want opposite traversals — the first
+ * wants X's callers, the second wants what X calls — and getting it wrong means returning
+ * a correct neighborhood of the wrong side. With one tool there is no separate
+ * `analyze_impact` to carry that intent, so it is read off the question instead.
+ */
+const IMPACT_PATTERN =
+  /\b(break|breaks|breaking|impact|affects?|affected|callers?|who calls|call(s|ed)? (it|this)|depend(s|ent|ents|encies)?|refactor|rename|safe to (change|delete|remove)|before (i )?(change|delete|remove))\b/i;
+
+export function detectIntent(query: string): {
+  direction: 'incoming' | 'outgoing' | 'both';
+  depth: number;
+} {
+  if (IMPACT_PATTERN.test(query)) {
+    // Callers, and callers of callers — the dependency cone `analyze_impact` used to return.
+    return { direction: 'incoming', depth: 2 };
+  }
+  return { direction: 'both', depth: 1 };
+}
+
+/**
+ * The single entry point. Compiles any question — plain English, a bag of symbol names, or
+ * both — into one plan: resolve a set of anchors from the whole query, traverse around them,
+ * synthesize the paths connecting them, and return their source.
+ */
+export function compileExplore(args: ExploreArgs): GraphQueryPlan {
+  const query = args.query.trim();
+  const maxAnchors = args.maxAnchors ?? 8;
+  const intent = detectIntent(query);
+  const terms = identifierTerms(query, maxAnchors);
 
   return {
     operation: 'region',
-    anchors: terms.map(t => ({ query: t, resolution: 'auto' as const })),
+    // Anchors must be non-empty. When the question is entirely prose ("what happens when a
+    // file changes"), the whole query stands in as the single spec; `resolveFreeForm` sees
+    // it has whitespace, skips exact resolution for it, and lets ranking do the work.
+    anchors: terms.length > 0
+      ? terms.map(t => ({ query: t, resolution: 'auto' as const }))
+      : [{ query, resolution: 'search' as const }],
     constraints: {
-      direction: 'both',
-      requestedDepth: args.depth ?? 1,
+      direction: args.direction ?? intent.direction,
+      requestedDepth: args.depth ?? intent.depth,
+      edgeKinds: args.edgeKinds,
+      freeFormQuery: query,
+      maxAnchors,
       tolerateMissingAnchors: true,
       synthesizeFlow: true
     },
@@ -57,6 +97,11 @@ export function compileExploreFlow(args: ExploreFlowArgs): GraphQueryPlan {
       docs: true
     }
   };
+}
+
+/** @deprecated Kept so existing callers keep working; `compileExplore` supersedes it. */
+export function compileExploreFlow(args: ExploreFlowArgs): GraphQueryPlan {
+  return compileExplore({ query: args.query, depth: args.depth, maxAnchors: args.maxAnchors });
 }
 
 export function compileSearchSymbols(args: SearchSymbolsArgs): GraphQueryPlan {
