@@ -46,6 +46,12 @@ export interface CandidateResult {
   node: KGNode;
   score: number;
   matchReasons: string[];
+  /**
+   * The distinct query terms this candidate matched. Lets a caller label *why* a symbol
+   * became an anchor ("resolved 'crawling' → crawl_site") when several were admitted from
+   * one whole-query discovery pass, instead of guessing from the match reasons.
+   */
+  tokens: string[];
 }
 
 export interface ExpansionConfig {
