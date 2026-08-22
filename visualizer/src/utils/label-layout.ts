@@ -67,6 +67,11 @@ export interface LabelLayoutOptions {
    * region flip back and forth.
    */
   sticky?: Set<string> | null;
+  /**
+   * Label allowance while a node is focused, independent of the zoom tiers — so
+   * hovering still names things at a zoom level that is otherwise silent.
+   */
+  focusBudget?: number;
   /** Font height and node gap, in graph units. */
   fontSize: number;
   gap: number;
@@ -89,6 +94,14 @@ export function pickTier(tiers: LabelTier[], globalScale: number, fitZoom: numbe
 export function planLabels(nodes: LabelNode[], opts: LabelLayoutOptions): LabelPlacement[] {
   if (nodes.length === 0) return [];
   const tier = pickTier(opts.tiers, opts.globalScale, opts.fitZoom);
+
+  /*
+   * A tier with a budget of zero draws nothing at all — that's how the graph stays
+   * silent when zoomed out. Focus overrides it, because naming what you're pointing
+   * at is the entire job of focus mode.
+   */
+  const budget = opts.focusId ? opts.focusBudget ?? 40 : tier.budget;
+  if (budget <= 0) return [];
 
   const importance = (n: LabelNode): number => {
     if (n.id === opts.focusId) return 1e9;
@@ -117,7 +130,7 @@ export function planLabels(nodes: LabelNode[], opts: LabelLayoutOptions): LabelP
   const placed: LabelBox[] = [];
 
   for (const node of candidates) {
-    if (placements.length >= tier.budget) break;
+    if (placements.length >= budget) break;
 
     const bold = node.id === opts.focusId || node.isModule;
     const width = opts.measure(node.label, bold);

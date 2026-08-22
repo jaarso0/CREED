@@ -30,15 +30,18 @@ const MAX_AUTO_EXPAND = 30; // modules revealed at once by zooming
  * progressively more detail. Collision culling then thins whatever survives.
  */
 const LABEL_TIERS = [
-  { zoom: 1.2, minDegree: Infinity, modulesOnly: true, budget: 30 },
-  { zoom: 2.5, minDegree: 12, modulesOnly: false, budget: 70 },
-  { zoom: 5, minDegree: 4, modulesOnly: false, budget: 130 },
-  { zoom: Infinity, minDegree: 0, modulesOnly: false, budget: 220 },
+  // Zoomed out the field carries no text at all — just the nodes.
+  { zoom: 1.8, minDegree: Infinity, modulesOnly: true, budget: 0 },
+  // Then names arrive gradually, busiest first, as you push in.
+  { zoom: 3, minDegree: 14, modulesOnly: false, budget: 40 },
+  { zoom: 5.5, minDegree: 5, modulesOnly: false, budget: 110 },
+  { zoom: Infinity, minDegree: 0, modulesOnly: false, budget: 200 },
 ];
 
 const LABEL_PX = 11; // on-screen font size, constant at every zoom
 const LABEL_GAP = 3; // screen px between the node and its label
 const MIN_NODE_SCREEN_PX = 2; // a node never renders smaller than this
+const NODE_SIZE_SCALE = 1.1; // everything a touch larger, since labels are gone at rest
 const IDLE_AMPLITUDE_PX = 3; // hard bound on how far a node wanders from its rest position
 
 export interface FocusRequest {
@@ -64,7 +67,8 @@ interface ForceGraphCanvasProps {
  */
 function radiusOf(node: GraphNode): number {
   const base = node.isModule ? 3 : 2.1;
-  return base + Math.min(Math.sqrt(node.degree) * 0.95, 6);
+  // Nudged up now that nothing else is carrying the field at rest
+  return (base + Math.min(Math.sqrt(node.degree) * 0.95, 6)) * NODE_SIZE_SCALE;
 }
 
 function rgb(hex: string): [number, number, number] {
