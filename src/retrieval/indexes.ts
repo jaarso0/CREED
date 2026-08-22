@@ -68,6 +68,18 @@ export class RetrievalIndexes implements SymbolIndex {
     return out;
   }
 
+  public namesStartingWith(prefix: string, limit: number): KGNode[] {
+    const out: KGNode[] = [];
+    for (const [name, nodes] of this.bySymbolName.entries()) {
+      if (!name.startsWith(prefix)) continue;
+      for (const n of nodes) {
+        out.push(n);
+        if (out.length >= limit) return out;
+      }
+    }
+    return out;
+  }
+
   public getEndpoint(endpointKey: string): KGNode | undefined {
     return this.byEndpoint.get(endpointKey);
   }

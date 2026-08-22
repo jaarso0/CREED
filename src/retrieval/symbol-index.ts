@@ -33,6 +33,17 @@ export interface SymbolIndex {
    */
   matchByFilePath(token: string): FilePathMatch[];
 
+  /**
+   * Nodes whose lowercased name starts with `prefix`, capped at `limit`.
+   *
+   * Backs the typo-tolerant fallback in discovery: a misspelled term ("resolvr")
+   * matches nothing literally, so we pull the small set of names sharing its first
+   * couple of characters and score them by edit distance. A prefix is used rather
+   * than a full scan because it is an index seek on both backends, which keeps a
+   * fallback that only ever runs on already-failed tokens genuinely cheap.
+   */
+  namesStartingWith(prefix: string, limit: number): KGNode[];
+
   /** Endpoint handler for a "METHOD /path" key, if one is registered. */
   getEndpoint(endpointKey: string): KGNode | undefined;
 

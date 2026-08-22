@@ -13,7 +13,7 @@ const SYMBOL_COLS = `
 `;
 
 /**
- * `SymbolIndex` served from `.masai/graph.db`.
+ * `SymbolIndex` served from `.creed/graph.db`.
  *
  * Exact lookups use ordinary B-tree indexes. Substring lookups — the ones that
  * previously walked every entry of an in-memory Map on every query token — go
@@ -38,6 +38,7 @@ export class SqliteSymbolIndex implements SymbolIndex {
     likeName: Statement;
     likeQualifiedName: Statement;
     likeFilePath: Statement;
+    namePrefix: Statement;
     incomingEdges: Statement;
     endpointCandidates: Statement;
     serviceCandidates: Statement;
@@ -90,6 +91,12 @@ export class SqliteSymbolIndex implements SymbolIndex {
       likeQualifiedName: this.db.prepare(likeQuery('qualified_name_lower')),
       likeFilePath: this.db.prepare(
         `SELECT ${SYMBOL_COLS} FROM symbols WHERE file_path_lower LIKE @like`
+      ),
+      // Anchored LIKE, so idx_symbols_name_lower serves this as a range seek rather
+      // than a scan — the reason the typo fallback keys off a prefix at all.
+      namePrefix: this.db.prepare(
+        `SELECT ${SYMBOL_COLS} FROM symbols
+          WHERE name_lower LIKE @prefix ESCAPE '\\' LIMIT @limit`
       ),
       incomingEdges: this.db.prepare(`
         SELECT parent_id AS source_id, child_id AS target_id, kind, NULL AS resolution_method
@@ -211,6 +218,17 @@ export class SqliteSymbolIndex implements SymbolIndex {
       const node = this.toNode(r);
       return { node, filePath: node.filePath };
     });
+  }
+
+  public namesStartingWith(prefix: string, limit: number): KGNode[] {
+    // `prefix` comes from a tokenized query term, so it can contain LIKE wildcards
+    // (`_` is legal in identifiers and matches any character); escape them.
+    const escaped = prefix.replace(/[\\%_]/g, '\\$&');
+    const rows = this.stmts.namePrefix.all({
+      prefix: `${escaped}%`,
+      limit
+    }) as SymbolRow[];
+    return rows.map(r => this.toNode(r));
   }
 
   // ── endpoints & services ──────────────────────────────────────────────────
