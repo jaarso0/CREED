@@ -33,6 +33,15 @@ export interface GraphQueryPlan {
      */
     tolerateMissingAnchors?: boolean;
     synthesizeFlow?: boolean;
+    /**
+     * The caller's original, unsplit question. Its presence switches anchor resolution to
+     * the whole-query path (`AnchorResolver.resolveFreeForm`), where ranking can see every
+     * term at once and admit a *set* of related symbols — rather than resolving each word in
+     * isolation and dropping the ones that match several things.
+     */
+    freeFormQuery?: string;
+    /** Ceiling on how many symbols the free-form path may anchor on. */
+    maxAnchors?: number;
   };
   materialize?: {
     source?: boolean;
@@ -71,6 +80,19 @@ export interface TracePathArgs {
 export interface AnalyzeImpactArgs {
   anchor: string;
   maxDepth?: number;
+}
+
+export interface ExploreArgs {
+  /** A question in plain English, a bag of symbol/file names, or any mix of the two. */
+  query: string;
+  /** Neighborhood depth around each anchor. Defaults to what the question's intent implies. */
+  depth?: number;
+  /** Overrides the traversal direction the question's intent implies. */
+  direction?: 'incoming' | 'outgoing' | 'both';
+  /** Narrows a tangled neighborhood, e.g. `["call"]`. */
+  edgeKinds?: string[];
+  /** Ceiling on how many symbols to anchor on (default 8). */
+  maxAnchors?: number;
 }
 
 export interface ExploreFlowArgs {

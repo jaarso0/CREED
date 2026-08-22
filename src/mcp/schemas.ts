@@ -55,6 +55,12 @@ export function validateGraphQueryPlan(plan: any): { valid: boolean; errors: str
       if (c.searchMode !== undefined && typeof c.searchMode !== 'boolean') {
         errors.push('constraints.searchMode must be a boolean');
       }
+      if (c.freeFormQuery !== undefined && typeof c.freeFormQuery !== 'string') {
+        errors.push('constraints.freeFormQuery must be a string');
+      }
+      if (c.maxAnchors !== undefined && (typeof c.maxAnchors !== 'number' || c.maxAnchors < 1)) {
+        errors.push('constraints.maxAnchors must be a positive number');
+      }
     }
   }
 

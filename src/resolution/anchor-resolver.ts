@@ -177,6 +177,137 @@ export class AnchorResolver {
   }
 
   /**
+   * Resolves a free-form question to a *set* of anchors in one pass.
+   *
+   * The per-term path (`resolveAll`) resolves each word independently, which has two
+   * consequences that made natural-language queries fail:
+   *
+   *  - `CandidateDiscovery`'s co-occurrence and co-location ranking never fired, because it
+   *    only ever saw one token at a time. The signal that "voice" and "agent" land in the
+   *    same file is the single most useful thing about a multi-word query, and it was dead.
+   *  - A word matching several comparable symbols was *dropped* as ambiguous. But when a
+   *    concept spans several functions — "crawling" over `crawl_site`, `crawl_competitors`,
+   *    `get_crawled_pages` — those symbols aren't rival interpretations to choose between.
+   *    They are collectively the answer, and picking one (or none) loses it.
+   *
+   * So: run discovery once over the whole query, and admit every candidate scoring within
+   * `RELATIVE_FLOOR` of the best one. Terms that look like real identifiers are still
+   * resolved exactly first and always kept — an explicitly named symbol outranks anything
+   * ranking can infer.
+   */
+  public resolveFreeForm(
+    query: string,
+    specs: AnchorSpec[],
+    opts: { maxAnchors?: number } = {}
+  ): MultiAnchorResolutionResult {
+    const maxAnchors = opts.maxAnchors ?? 8;
+
+    // Anchors scoring below this fraction of the best candidate are noise, not a second
+    // reading of the question. Calibrated so a concept spread over several same-shaped
+    // functions is admitted whole, while a term that merely shares a substring is not.
+    const RELATIVE_FLOOR = 0.4;
+    const ABSOLUTE_FLOOR = 5;
+    const MAX_PER_FILE = 3;
+    const MAX_FILE_ANCHORS = 2;
+
+    const anchors: ResolvedAnchor[] = [];
+    const seen = new Set<string>();
+    const inferred: Disambiguation[] = [];
+    const perFile = new Map<string, number>();
+    const matchedTerms = new Set<string>();
+    const exactTerms: string[] = [];
+    let fileAnchors = 0;
+
+    const admit = (node: KGNode, label: Disambiguation | null): boolean => {
+      if (seen.has(node.id) || anchors.length >= maxAnchors) return false;
+      const resolved = this.mapNodeToResolved(node);
+      anchors.push(resolved);
+      seen.add(node.id);
+      perFile.set(node.filePath, (perFile.get(node.filePath) ?? 0) + 1);
+      if (node.kind === 'file') fileAnchors++;
+      if (label) inferred.push({ ...label, chosen: resolved });
+      return true;
+    };
+
+    // A multi-word spec is the whole question standing in as an anchor (compileExplore emits
+    // one when the question is entirely prose). There is no symbol by that name to look up —
+    // ranking is the only thing that can answer it.
+    const namedSpecs = specs.filter(s => !/\s/.test(s.query.trim()));
+
+    // 1. Identifier-shaped terms, resolved exactly. An explicitly named symbol is
+    //    authoritative and is kept regardless of what ranking thinks.
+    for (const spec of namedSpecs) {
+      const result = this.resolveAnchor(spec);
+      if (result.status !== 'resolved') continue;
+      for (const anchor of result.anchors) {
+        const node = this.graph.getNode(anchor.nodeId);
+        if (node && admit(node, null)) {
+          matchedTerms.add(spec.query.toLowerCase());
+          exactTerms.push(spec.query);
+        }
+      }
+    }
+
+    // 2. One whole-query discovery pass, with co-occurrence ranking live.
+    const discovered = this.discovery.discover(query, 40);
+    if (discovered.length > 0) {
+      const floor = Math.max(discovered[0].score * RELATIVE_FLOOR, ABSOLUTE_FLOOR);
+      for (const candidate of discovered) {
+        if (anchors.length >= maxAnchors) break;
+        if (candidate.score < floor) break;
+
+        candidate.tokens.forEach(t => matchedTerms.add(t));
+
+        const node = candidate.node;
+        if (seen.has(node.id) || !this.graph.getNode(node.id)) continue;
+        // A file anchor expands to everything the file contains, so a couple is plenty;
+        // and no single file should supply the whole anchor set.
+        if (node.kind === 'file' && fileAnchors >= MAX_FILE_ANCHORS) continue;
+        if ((perFile.get(node.filePath) ?? 0) >= MAX_PER_FILE) continue;
+
+        admit(node, {
+          query: candidate.tokens.length > 0 ? candidate.tokens.join(' ') : query,
+          chosen: this.mapNodeToResolved(node),
+          alternatives: []
+        });
+      }
+
+      // Everything fell below the floor — the whole query is a weak match. A weak answer
+      // with its confidence stated beats "not found", so take the best one.
+      if (anchors.length === 0) {
+        const node = this.graph.getNode(discovered[0].node.id);
+        if (node) {
+          discovered[0].tokens.forEach(t => matchedTerms.add(t));
+          admit(node, {
+            query: discovered[0].tokens.join(' ') || query,
+            chosen: this.mapNodeToResolved(node),
+            alternatives: []
+          });
+        }
+      }
+    }
+
+    if (anchors.length === 0) {
+      return {
+        status: 'not_found',
+        missingQueries: namedSpecs.length > 0 ? namedSpecs.map(s => s.query) : [query]
+      };
+    }
+
+    const unmatchedTerms = namedSpecs
+      .map(s => s.query)
+      .filter(q => !matchedTerms.has(q.toLowerCase()));
+
+    return {
+      status: 'resolved',
+      anchors,
+      disambiguations: inferred.length > 0 ? inferred : undefined,
+      unmatchedTerms: unmatchedTerms.length > 0 ? unmatchedTerms : undefined,
+      exactTerms: exactTerms.length > 0 ? exactTerms : undefined
+    };
+  }
+
+  /**
    * Resolves multiple anchor specs.
    *
    * With `autoPick` (used by traversal tools — explore/trace/impact), an ambiguous query
