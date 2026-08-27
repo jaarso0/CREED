@@ -177,23 +177,12 @@ Questions get the same treatment: if most of what you asked matched nothing, or 
 
 ### Tokens
 
-![Bar chart comparing token costs of explore vs grep-and-read across ten questions on this repo. Explore stays between 4,899 and 9,350 tokens; grep-and-read ranges from 5,095 to 164,931.](assets/chart-light.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/chart-dark.svg">
+  <img alt="Bar chart comparing token costs of explore vs grep-and-read across ten questions on this repo. Explore stays between 4,899 and 9,350 tokens; grep-and-read ranges from 5,095 to 164,931." src="assets/chart-light.svg" width="100%">
+</picture>
 
-Ten questions, run against this repo. The multiplier isn't the interesting part — the spread is:
-
-| | cheapest | dearest | spread |
-| :--- | ---: | ---: | ---: |
-| `explore` | 4,899 | 9,350 | **1.9×** |
-| grep + read | 5,095 | 164,931 | **32.4×** |
-
-Creed ranks results down to a token budget, so cost barely moves with how broad your question is. grep's cost tracks how common your word happens to be: `symbol` matches 1,259 lines across 63 files here, and reading them is 164,931 tokens — more than most context windows hold, for one question.
-
-Across all ten, `explore` totals **75,965** tokens against **523,569** for grep-and-read-everything (6.9×) and **211,716** for a top-5 reading strategy (2.8×).
-
-**Where it doesn't help.** `who calls allocateBudget` came out at 4,899 vs 5,095 — noise. When a symbol is rare and lives in small files, grep was already cheap. The savings come from breadth.
-
-<details>
-<summary><b>Per-question numbers and methodology</b></summary>
+Ten questions, run against this repo:
 
 | Question | `explore` | grep + read every match | grep + read top 5 |
 | :--- | ---: | ---: | ---: |
@@ -207,7 +196,21 @@ Across all ten, `explore` totals **75,965** tokens against **523,569** for grep-
 | how does the extraction pipeline work | 9,350 | 42,071 | 10,729 |
 | how is the graph built | 7,534 | 124,187 | 40,057 |
 | how are symbols stored | 8,950 | 164,931 | 51,305 |
-| **Total** | **75,965** | **523,569** | **211,716** |
+| **Total** | **75,965** | **523,569** — 6.9× | **211,716** — 2.8× |
+
+The multiplier isn't the interesting part. The spread is:
+
+| | cheapest | dearest | spread |
+| :--- | ---: | ---: | ---: |
+| `explore` | 4,899 | 9,350 | **1.9×** |
+| grep + read | 5,095 | 164,931 | **32.4×** |
+
+Creed ranks results down to a token budget, so cost barely moves with how broad your question is. grep's cost tracks how common your word happens to be: `symbol` matches 1,259 lines across 63 files here, and reading them is 164,931 tokens — more than most context windows hold, for one question.
+
+**Where it doesn't help.** `who calls allocateBudget` came out at 4,899 vs 5,095 — noise. When a symbol is rare and lives in small files, grep was already cheap. The savings come from breadth.
+
+<details>
+<summary><b>Methodology</b></summary>
 
 Counted with a real BPE tokenizer, not a chars/4 estimate — code tokenizes at roughly 3–3.5 chars per token.
 
