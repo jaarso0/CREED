@@ -120,6 +120,21 @@ index yet, it builds one first.
 
 ---
 
+## See it, too
+
+```bash
+npx creed-kg serve .
+```
+
+Opens an interactive 2D graph explorer in your browser — flat, module, service, API and data
+views, a details inspector, and execution-flow tracing. Ships prebuilt; nothing to compile.
+
+<video src="assets/demo.mp4" controls></video>
+
+---
+
+---
+
 ## What your agent actually receives
 
 Not a JSON blob it has to decode — formatted markdown with the code already in it:
@@ -334,18 +349,6 @@ local variables, and `this.field.method()` chains — through the field's declar
 interface members, imported types, and even standard-library and dependency types, which
 become explicit nodes marking exactly where your code meets its dependencies.
 
----
-
-## See it, too
-
-```bash
-npx creed-kg serve .
-```
-
-Opens an interactive 2D graph explorer in your browser — flat, module, service, API and data
-views, a details inspector, and execution-flow tracing. Ships prebuilt; nothing to compile.
-
----
 
 ## Every command
 
