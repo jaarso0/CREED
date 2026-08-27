@@ -402,7 +402,7 @@ graph.close();
 ## Contributing
 
 ```bash
-git clone https://github.com/jaarso0/MASAI-KG.git
+git clone https://github.com/jaarso0/CREED.git
 npm install
 npm test
 ```
