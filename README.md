@@ -1,68 +1,62 @@
 # Creed
 
-**Stop paying your AI agent to rediscover your codebase on every single request.**
+**A knowledge graph of your codebase, for AI coding agents.**
 
 [![npm](https://img.shields.io/npm/v/creed-kg.svg)](https://www.npmjs.com/package/creed-kg)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
-Ask your agent "what breaks if I change this function?" and watch what happens: grep for the
-name, read the file, grep for callers, read those files, grep again for *their* callers.
-Half a dozen tool calls and thousands of tokens later, it has a partial answer — and it
-throws all of it away before your next question.
+Creed reads your project once — parsing it with Tree-sitter, resolving imports, calls,
+inheritance and type usage across files — and stores the result as a SQLite index. Your
+agent then asks a question in plain English and gets **one** answer back: the symbols
+involved, what depends on them, the exact call sites, and the source, already attached.
 
-Creed does that analysis **once**. It parses your code with Tree-sitter, resolves imports,
-calls, inheritance and type usage across files, and indexes the whole thing into SQLite.
-Then your agent just asks:
+Without it, *"what breaks if I change this function?"* costs half a dozen greps and file
+reads, produces a partial answer, and is thrown away before the next question. Measured on
+this repo, that loop costs [**2–18× the tokens**](#what-it-costs-in-tokens) of a single
+`explore` call.
 
-> *what breaks if I change `hashSource`?*
+---
 
-and gets the answer in **one call**, with the callers, the exact call sites, and the source
-already attached.
+## Install
+
+Requires **Node 22+**. Two commands:
 
 ```bash
 npm install -D creed-kg
 ```
-
----
-
-## Try it on your own code, right now
-
-No editor setup, no config file. Install it and ask a question:
-
-```bash
-npm install -D creed-kg
-npx creed-kg query "how does authentication work"
-```
-
-Creed indexes your project on the spot and prints the answer — the symbols involved, what
-depends on them, the call sites, and the source. Ask it anything: a function name, a file
-name, a half-remembered phrase, or all three mixed together.
-
-```bash
-npx creed-kg query "UserService save"
-npx creed-kg query "what happens when a payment fails"
-npx creed-kg query "src/auth login token refresh"
-```
-
-That's the same engine your agent gets — you're just reading it yourself.
-
----
-
-## Wire it into your editor — one command
 
 ```bash
 npx creed-kg init
 ```
 
-That indexes the repo, detects which editors you use, writes the MCP config for each, and
-adds `.creed/` to your `.gitignore`. **Restart your editor and your agent has the tools.**
+Both steps matter, and they do different things:
 
-It merges — existing MCP servers and unrelated settings are left alone — and re-running is
-a no-op. Use `--all` to configure every supported editor, or `--editor cursor` to pick one.
+- **`npm install`** downloads Creed into `node_modules/`. It does not look at your code yet —
+  nothing is parsed and no index appears.
+- **`npx creed-kg init`** does the actual work: indexes your repo, writes the MCP config for
+  whichever editors you have, and adds `.creed/` to your `.gitignore`.
+
+**Restart your editor, and your agent has the tool.**
+
+`init` merges rather than overwrites — existing MCP servers and unrelated settings are left
+alone — and re-running it is a no-op. Add `--all` to configure every supported editor, or
+`--editor cursor` to pick just one.
 
 <details>
-<summary>Prefer to do it by hand?</summary>
+<summary><b>What <code>init</code> just created</b></summary>
+
+| Path | What it is |
+| :--- | :--- |
+| `.creed/graph.db` | The index itself — every symbol and edge in your project. |
+| `.mcp.json` *(or your editor's equivalent)* | Tells your editor how to start Creed. |
+
+`.creed/` is **derived data**, not something you maintain. It's gitignored, safe to delete,
+and rebuilt from source on the next run. Nothing else in your project is touched.
+</details>
+
+<details>
+<summary><b>Prefer to configure your editor by hand?</b></summary>
 
 It's the same block everywhere, with **no project path to fill in** — Creed walks up from
 wherever your editor launches it to find the project root, so this works in every repo:
@@ -94,9 +88,35 @@ Because the block carries no path, you can put it in a **global** config once an
 in every project you open.
 </details>
 
-Once connected, the server indexes on first connect and keeps itself current — a file
-watcher rebuilds as you edit, re-parsing only what changed. There is no re-index command to
-remember.
+Once connected, Creed keeps itself current — a file watcher rebuilds as you edit, re-parsing
+only what changed. There is no re-index command to remember, and no stale-index problem to
+notice.
+
+---
+
+## Two ways to use it
+
+**Your agent, through MCP.** After `init`, your agent has one tool — `explore` — and reaches
+for it on its own. Nothing for you to do.
+
+**You, from the terminal.** The same engine, no editor involved:
+
+```bash
+npx creed-kg query "how does authentication work"
+```
+
+Ask it anything — a function name, a file name, a half-remembered phrase, or all three mixed
+together:
+
+```bash
+npx creed-kg query "UserService save"
+npx creed-kg query "what happens when a payment fails"
+npx creed-kg query "src/auth login token refresh"
+```
+
+Both routes read the same `.creed/graph.db` and return the same answer — one as a tool call,
+one as text on your terminal. `query` works whether or not you ever ran `init`; if there's no
+index yet, it builds one first.
 
 ---
 
@@ -215,6 +235,61 @@ content, not above it, so a warning on every good result never trains you to ski
 
 ---
 
+## What it costs in tokens
+
+The claim at the top of this README is that one call replaces a grep-and-read loop. Here it
+is measured, on this repository — 121 indexed files, counted with a real BPE tokenizer rather
+than a chars/4 estimate, since code tokenizes at roughly 3–3.5 chars per token.
+
+The baseline is deliberately generous. It assumes **one** grep, with a pattern that already
+contains the right symbol name — as if the agent guessed perfectly on the first try — and
+then reads the files it matched. Real agents grep two or three times with imperfect patterns,
+read files that turn out to be irrelevant, and re-grep for callers of whatever they found.
+None of that is counted.
+
+| Question | `explore` | grep + read every match | grep + read top 5 |
+| :--- | ---: | ---: | ---: |
+| what breaks if I change `hashSource` | 5,034 | 11,666 | 11,666 |
+| what breaks if I change `processPlan` | 9,217 | 27,335 | 19,134 |
+| who calls `allocateBudget` | 4,899 | 5,095 | 5,095 |
+| how does anchor resolution work | 8,631 | 32,953 | 24,409 |
+| how does the file watcher work | 6,548 | 14,769 | 12,409 |
+| how does caching work | 7,685 | 60,772 | 17,050 |
+| how does discovery rank candidates | 8,117 | 39,790 | 19,862 |
+| how does the extraction pipeline work | 9,350 | 42,071 | 10,729 |
+| how is the graph built | 7,534 | 124,187 | 40,057 |
+| how are symbols stored | 8,950 | 164,931 | 51,305 |
+| **Total** | **75,965** | **523,569** — 6.9× | **211,716** — 2.8× |
+
+Two baselines, because agents differ. A thorough one reads everything the grep matched, and
+that is the only column that actually sees what Creed's answer covers. A token-conscious one
+reads the five most promising files and accepts that it might miss the caller that mattered.
+
+**The multiplier is not the interesting part — the spread is.**
+
+| | cheapest | dearest | spread |
+| :--- | ---: | ---: | ---: |
+| `explore` | 4,899 | 9,350 | **1.9×** |
+| grep + read | 5,095 | 164,931 | **32.4×** |
+
+Creed ranks results down to a token budget, so what it costs barely moves with how broad your
+question is. grep's cost is proportional to how common your word happens to be: `symbol`
+matches 1,259 lines across 63 files in this repo, and reading those files is 164,931 tokens —
+more than most context windows hold, to answer one question.
+
+**Where it doesn't help.** `who calls allocateBudget` came out at 4,899 against 5,095 — a 4%
+saving, which is noise. When a symbol is rare and lives in small files, grep was already cheap
+and Creed's fixed overhead eats the difference. The savings come from breadth, not from every
+lookup.
+
+Reproduce it yourself — the scenarios and the baseline model are all in the script:
+
+```bash
+npx tsx scratch/bench-tokens.ts
+```
+
+---
+
 ## Built for codebases that are actually large
 
 The index lives in SQLite, not in memory. Lookups go through real indexes — including an
@@ -311,10 +386,12 @@ graph.close();
 
 ## Good to know
 
-- **Node 22+** required.
-- Add **`.creed/`** to your `.gitignore` — it's a derived cache, rebuildable from source at
-  any time.
+- **`init` adds `.creed/` to your `.gitignore` for you.** If you wired up your editor by hand
+  instead, add it yourself — it's a derived cache, rebuildable from source at any time, and
+  it does not belong in version control.
+- **Nothing to re-run after you edit code.** The file watcher rebuilds only what changed.
 - `CREED_NO_CACHE=1` forces a full re-parse if you ever want one.
+- Deleting `.creed/` is always safe. The next command rebuilds it.
 
 ---
 
