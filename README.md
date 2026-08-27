@@ -80,7 +80,6 @@ npx creed-kg query "src/auth login token refresh"
 
 ## See it, too
 
-
 ```bash
 npx creed-kg serve .
 ```
@@ -88,11 +87,7 @@ npx creed-kg serve .
 Opens an interactive 2D graph explorer in your browser — flat, module, service, API and data
 views, a details inspector, and execution-flow tracing. Ships prebuilt; nothing to compile.
 
-
-
 https://github.com/user-attachments/assets/27c56b1f-8baa-4267-80ed-986f58063ebc
-
-
 
 ---
 
@@ -182,28 +177,9 @@ Questions get the same treatment: if most of what you asked matched nothing, or 
 
 ### Tokens
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/chart-light.svg">
-  <img alt="Bar chart comparing token costs of explore vs grep-and-read across ten queries. Explore is consistently lower." src="assets/chart-light.svg" width="100%">
-</picture>
+![Bar chart comparing token costs of explore vs grep-and-read across ten questions on this repo. Explore stays between 4,899 and 9,350 tokens; grep-and-read ranges from 5,095 to 164,931.](assets/chart-light.svg)
 
-Across ten questions on this repo:
-
-| Question | explore | grep + read every match | grep + read top 5 |
-| :--- | ---: | ---: | ---: |
-| what breaks if I change hashSource | 5,034 | 11,666 | 11,666 |
-| what breaks if I change processPlan | 9,217 | 27,335 | 19,134 |
-| who calls allocateBudget | 4,899 | 5,095 | 5,095 |
-| how does anchor resolution work | 8,631 | 32,953 | 24,409 |
-| how does the file watcher work | 6,548 | 14,769 | 12,409 |
-| how does caching work | 7,685 | 60,772 | 17,050 |
-| how does discovery rank candidates | 8,117 | 39,790 | 19,862 |
-| how does the extraction pipeline work | 9,350 | 42,071 | 10,729 |
-| how is the graph built | 7,534 | 124,187 | 40,057 |
-| how are symbols stored | 8,950 | 164,931 | 51,305 |
-| **Total** | **75,965** | **523,569** — 6.9× | **211,716** — 2.8× |
-
-The multiplier isn't the interesting part. The spread is:
+Ten questions, run against this repo. The multiplier isn't the interesting part — the spread is:
 
 | | cheapest | dearest | spread |
 | :--- | ---: | ---: | ---: |
@@ -211,6 +187,8 @@ The multiplier isn't the interesting part. The spread is:
 | grep + read | 5,095 | 164,931 | **32.4×** |
 
 Creed ranks results down to a token budget, so cost barely moves with how broad your question is. grep's cost tracks how common your word happens to be: `symbol` matches 1,259 lines across 63 files here, and reading them is 164,931 tokens — more than most context windows hold, for one question.
+
+Across all ten, `explore` totals **75,965** tokens against **523,569** for grep-and-read-everything (6.9×) and **211,716** for a top-5 reading strategy (2.8×).
 
 **Where it doesn't help.** `who calls allocateBudget` came out at 4,899 vs 5,095 — noise. When a symbol is rare and lives in small files, grep was already cheap. The savings come from breadth.
 
@@ -231,9 +209,13 @@ Creed ranks results down to a token budget, so cost barely moves with how broad 
 | how are symbols stored | 8,950 | 164,931 | 51,305 |
 | **Total** | **75,965** | **523,569** | **211,716** |
 
+Counted with a real BPE tokenizer, not a chars/4 estimate — code tokenizes at roughly 3–3.5 chars per token.
+
 The baseline is deliberately generous: **one** grep, with a pattern that already contains the right symbol name — as if the agent guessed perfectly — then reads what it matched. Real agents grep two or three times with imperfect patterns, read irrelevant files, and re-grep for callers. None of that is counted.
 
 Two columns because agents differ. Reading every match is the only one that actually covers what Creed's answer covers; reading the top five accepts that it might miss the caller that mattered.
+
+This measures cost, not correctness — it does not claim the two strategies return equally good answers.
 
 Reproduce it:
 
@@ -275,6 +257,8 @@ Cheap enough to just always be current, which is why staleness never becomes you
 Creed also recognises what your code means, not just its shape. Adapters detect **FastAPI, Flask, NestJS and Express** routes, ORM data models and service classes, and attach them to the graph — so `explore "POST /login"` resolves to the handler.
 
 Cross-file resolution follows imports, class inheritance, instance-method calls through local variables, and `this.field.method()` chains — through the field's declared type, interface members, imported types, and standard-library and dependency types, which become explicit nodes marking where your code meets its dependencies.
+
+Tree-sitter rather than each language's own type checker, because it gives one pipeline across every language above, needs no build or typecheck step, works on code that doesn't currently compile, and is what makes a 0.15s incremental rebuild possible. The trade is precision: where a reference can't be resolved structurally, Creed falls back to a name match and labels it as one.
 
 ---
 
@@ -328,6 +312,4 @@ npm install
 npm test
 ```
 
-[**Architecture**](architecture.md) · [**Deep dive**](deep_dive_architecture.md) · [**Coverage notes**](limitations.md)
-
-MIT licensed.
+[**Architecture**](architecture.md) · MIT licensed.
