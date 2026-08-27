@@ -1,12 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" width="100%" height="auto" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
   <title>Token Cost per Question: explore vs grep</title>
-  <desc>A horizontal bar chart comparing the token cost of 'explore' vs 'grep + read every match' for 10 codebase questions. Explore is consistently cheaper, remaining under 10k tokens, while grep often exceeds 60k.</desc>
+  <desc>A horizontal bar chart comparing the token cost of 'explore' vs 'grep + read every match' for 10 codebase questions with a white background. Explore is consistently cheaper, remaining under 10k tokens, while grep often exceeds 60k.</desc>
   <defs>
     <pattern id="stripe-light" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
       <rect width="8" height="8" fill="#ffffff" />
       <rect width="4" height="8" fill="#d0d7de" />
     </pattern>
   </defs>
+
+  <!-- Solid White Background -->
+  <rect x="0" y="0" width="900" height="560" fill="#ffffff" stroke="none" />
 
   <!-- Title and Caption -->
   <text x="20" y="35" font-size="18" font-weight="600" fill="#24292f">Token Cost per Question: explore vs. grep (Lower is Better)</text>
