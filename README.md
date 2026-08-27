@@ -129,7 +129,7 @@ npx creed-kg serve .
 Opens an interactive 2D graph explorer in your browser — flat, module, service, API and data
 views, a details inspector, and execution-flow tracing. Ships prebuilt; nothing to compile.
 
-<video src="assets/demo.mp4" controls></video>
+<video src="assets/demo.mp4" controls width="800"></video>
 
 ---
 
