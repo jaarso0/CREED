@@ -199,11 +199,19 @@ Questions get the same treatment: if most of what you asked matched nothing, or 
 
 Across ten questions on this repo:
 
-| | Total tokens | vs `explore` |
-| :--- | ---: | ---: |
-| `explore` | **75,965** | — |
-| grep + read every match | 523,569 | 6.9× |
-| grep + read top 5 files | 211,716 | 2.8× |
+| Question | explore | grep + read every match | grep + read top 5 |
+| :--- | ---: | ---: | ---: |
+| what breaks if I change hashSource | 5,034 | 11,666 | 11,666 |
+| what breaks if I change processPlan | 9,217 | 27,335 | 19,134 |
+| who calls allocateBudget | 4,899 | 5,095 | 5,095 |
+| how does anchor resolution work | 8,631 | 32,953 | 24,409 |
+| how does the file watcher work | 6,548 | 14,769 | 12,409 |
+| how does caching work | 7,685 | 60,772 | 17,050 |
+| how does discovery rank candidates | 8,117 | 39,790 | 19,862 |
+| how does the extraction pipeline work | 9,350 | 42,071 | 10,729 |
+| how is the graph built | 7,534 | 124,187 | 40,057 |
+| how are symbols stored | 8,950 | 164,931 | 51,305 |
+| **Total** | **75,965** | **523,569** — 6.9× | **211,716** — 2.8× |
 
 The multiplier isn't the interesting part. The spread is:
 
