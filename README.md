@@ -76,17 +76,11 @@ npx creed-kg query "src/auth login token refresh"
 
 `query` builds an index first if there isn't one, so it works with or without `init`.
 
-**In a browser.** `npx creed-kg serve .` opens an interactive graph explorer — flat, module, service, API and data views, a details inspector, and execution-flow tracing. Ships prebuilt.
-
-https://github.com/user-attachments/assets/27c56b1f-8baa-4267-80ed-986f58063ebc
-
 ---
 
-## What comes back
+## See it, too
 
-<<<<<<< HEAD
-Formatted markdown with the code already in it, not a JSON blob:
-=======
+
 ```bash
 npx creed-kg serve .
 ```
@@ -99,14 +93,10 @@ views, a details inspector, and execution-flow tracing. Ships prebuilt; nothing 
 https://github.com/user-attachments/assets/27c56b1f-8baa-4267-80ed-986f58063ebc
 
 
----
 
 ---
 
 ## What your agent actually receives
-
-Not a JSON blob it has to decode — formatted markdown with the code already in it:
->>>>>>> ccdb00936900de2b39e01a068b5a03a940882642
 
 ````
 **Exploration: what breaks if I change hashSource**
