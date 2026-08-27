@@ -237,9 +237,10 @@ content, not above it, so a warning on every good result never trains you to ski
 
 ## What it costs in tokens
 
-The claim at the top of this README is that one call replaces a grep-and-read loop. Here it
-is measured, on this repository — 121 indexed files, counted with a real BPE tokenizer rather
-than a chars/4 estimate, since code tokenizes at roughly 3–3.5 chars per token.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="chart-dark.svg">
+  <img alt="Bar chart showing token costs for code search queries, comparing explore vs grep-and-read. Explore is consistently lower." src="chart-light.svg" width="100%">
+</picture>
 
 The baseline is deliberately generous. It assumes **one** grep, with a pattern that already
 contains the right symbol name — as if the agent guessed perfectly on the first try — and

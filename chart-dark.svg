@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" width="100%" height="auto" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <title>Token Cost per Question: explore vs grep</title>
+  <desc>A horizontal bar chart comparing the token cost of 'explore' vs 'grep + read every match' for 10 codebase questions. Explore is consistently cheaper, remaining under 10k tokens, while grep often exceeds 60k.</desc>
+  <defs>
+    <pattern id="stripe-light" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#ffffff" />
+      <rect width="4" height="8" fill="#d0d7de" />
+    </pattern>
+  </defs>
+
+  <!-- Title and Caption -->
+  <text x="20" y="35" font-size="18" font-weight="600" fill="#24292f">Token Cost per Question: explore vs. grep (Lower is Better)</text>
+  
+
+  <!-- Legend -->
+  <rect x="20" y="50" width="14" height="14" fill="#0969da" rx="2" />
+  <text x="42" y="62" font-size="14" fill="#24292f">explore</text>
+  
+  <rect x="120" y="50" width="14" height="14" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" rx="2" />
+  <text x="142" y="62" font-size="14" fill="#24292f">grep + read every match</text>
+
+  <!-- Gridlines -->
+  <g stroke="#d0d7de" stroke-width="1" stroke-dasharray="4,4">
+    <line x1="440" y1="80" x2="440" y2="510" />
+    <line x1="630" y1="80" x2="630" y2="510" />
+    <line x1="820" y1="80" x2="820" y2="510" />
+  </g>
+  <line x1="250" y1="80" x2="250" y2="510" stroke="#8c959f" stroke-width="1.5" />
+
+  <!-- Axis Labels -->
+  <g font-size="12" fill="#57606a" text-anchor="middle">
+    <text x="250" y="75">0</text>
+    <text x="440" y="75">20k</text>
+    <text x="630" y="75">40k</text>
+    <text x="820" y="75">60k</text>
+  </g>
+
+  <!-- Chart Data -->
+  <!-- 1. how are symbols stored -->
+  <text x="240" y="101" font-size="13" text-anchor="end" dominant-baseline="middle" fill="#24292f">how are symbols stored</text>
+  <path d="M 250 90 L 820 90 L 825 92.5 L 815 97.5 L 820 100 L 250 100 Z" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" />
+  <text x="830" y="96" font-size="12" dominant-baseline="middle" fill="#57606a">164,931</text>
+  
+  <rect x="250" y="102" width="85" height="10" fill="#0969da" />
+  <text x="340" y="107" font-size="12" dominant-baseline="middle" fill="#0969da" font-weight="500">8,950</text>
+
+  <!-- 2. how is the graph built -->
+  <text x="240" y="143" font-size="13" text-anchor="end" dominant-baseline="middle" fill="#24292f">how is the graph built</text>
+  <path d="M 250 132 L 820 132 L 825 134.5 L 815 139.5 L 820 142 L 250 142 Z" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" />
+  <text x="830" y="138" font-size="12" dominant-baseline="middle" fill="#57606a">124,187</text>
+  
+  <rect x="250" y="144" width="71.5" height="10" fill="#0969da" />
+  <text x="326.5" y="149" font-size="12" dominant-baseline="middle" fill="#0969da" font-weight="500">7,534</text>
+
+  <!-- 3. how does caching work -->
+  <text x="240" y="185" font-size="13" text-anchor="end" dominant-baseline="middle" fill="#24292f">how does caching work</text>
+  <path d="M 250 174 L 820 174 L 825 176.5 L 815 181.5 L 820 184 L 250 184 Z" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" />
+  <text x="830" y="180" font-size="12" dominant-baseline="middle" fill="#57606a">60,772</text>
+  
+  <rect x="250" y="186" width="73" height="10" fill="#0969da" />
+  <text x="328" y="191" font-size="12" dominant-baseline="middle" fill="#0969da" font-weight="500">7,685</text>
+
+  <!-- 4. how does the extraction pipeline work -->
+  <text x="240" y="227" font-size="13" text-anchor="end" dominant-baseline="middle" fill="#24292f">how does the extraction pipeline work</text>
+  <rect x="250" y="216" width="399.5" height="10" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" />
+  <text x="654.5" y="222" font-size="12" dominant-baseline="middle" fill="#57606a">42,071</text>
+  
+  <rect x="250" y="228" width="89" height="10" fill="#0969da" />
+  <text x="344" y="233" font-size="12" dominant-baseline="middle" fill="#0969da" font-weight="500">9,350</text>
+
+  <!-- 5. how does discovery rank candidates -->
+  <text x="240" y="269" font-size="13" text-anchor="end" dominant-baseline="middle" fill="#24292f">how does discovery rank candidates</text>
+  <rect x="250" y="258" width="378" height="10" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" />
+  <text x="633" y="264" font-size="12" dominant-baseline="middle" fill="#57606a">39,790</text>
+  
+  <rect x="250" y="270" width="77" height="10" fill="#0969da" />
+  <text x="332" y="275" font-size="12" dominant-baseline="middle" fill="#0969da" font-weight="500">8,117</text>
+
+  <!-- 6. how does anchor resolution work -->
+  <text x="240" y="311" font-size="13" text-anchor="end" dominant-baseline="middle" fill="#24292f">how does anchor resolution work</text>
+  <rect x="250" y="300" width="313" height="10" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" />
+  <text x="568" y="306" font-size="12" dominant-baseline="middle" fill="#57606a">32,953</text>
+  
+  <rect x="250" y="312" width="82" height="10" fill="#0969da" />
+  <text x="337" y="317" font-size="12" dominant-baseline="middle" fill="#0969da" font-weight="500">8,631</text>
+
+  <!-- 7. what breaks if I change processPlan -->
+  <text x="240" y="353" font-size="13" text-anchor="end" dominant-baseline="middle" fill="#24292f">what breaks if I change processPlan</text>
+  <rect x="250" y="342" width="259.5" height="10" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" />
+  <text x="514.5" y="348" font-size="12" dominant-baseline="middle" fill="#57606a">27,335</text>
+  
+  <rect x="250" y="354" width="87.5" height="10" fill="#0969da" />
+  <text x="342.5" y="359" font-size="12" dominant-baseline="middle" fill="#0969da" font-weight="500">9,217</text>
+
+  <!-- 8. how does the file watcher work -->
+  <text x="240" y="395" font-size="13" text-anchor="end" dominant-baseline="middle" fill="#24292f">how does the file watcher work</text>
+  <rect x="250" y="384" width="140.5" height="10" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" />
+  <text x="395.5" y="390" font-size="12" dominant-baseline="middle" fill="#57606a">14,769</text>
+  
+  <rect x="250" y="396" width="62" height="10" fill="#0969da" />
+  <text x="317" y="401" font-size="12" dominant-baseline="middle" fill="#0969da" font-weight="500">6,548</text>
+
+  <!-- 9. what breaks if I change hashSource -->
+  <text x="240" y="437" font-size="13" text-anchor="end" dominant-baseline="middle" fill="#24292f">what breaks if I change hashSource</text>
+  <rect x="250" y="426" width="111" height="10" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" />
+  <text x="366" y="432" font-size="12" dominant-baseline="middle" fill="#57606a">11,666</text>
+  
+  <rect x="250" y="438" width="48" height="10" fill="#0969da" />
+  <text x="303" y="443" font-size="12" dominant-baseline="middle" fill="#0969da" font-weight="500">5,034</text>
+
+  <!-- 10. who calls allocateBudget -->
+  <text x="240" y="479" font-size="13" text-anchor="end" dominant-baseline="middle" fill="#24292f">who calls allocateBudget</text>
+  <rect x="250" y="468" width="48.5" height="10" fill="url(#stripe-light)" stroke="#8c959f" stroke-width="1" />
+  <text x="303.5" y="474" font-size="12" dominant-baseline="middle" fill="#57606a">5,095</text>
+  
+  <rect x="250" y="480" width="46.5" height="10" fill="#0969da" />
+  <text x="301.5" y="485" font-size="12" dominant-baseline="middle" fill="#0969da" font-weight="500">4,899</text>
+</svg>
