@@ -84,7 +84,29 @@ https://github.com/user-attachments/assets/27c56b1f-8baa-4267-80ed-986f58063ebc
 
 ## What comes back
 
+<<<<<<< HEAD
 Formatted markdown with the code already in it, not a JSON blob:
+=======
+```bash
+npx creed-kg serve .
+```
+
+Opens an interactive 2D graph explorer in your browser — flat, module, service, API and data
+views, a details inspector, and execution-flow tracing. Ships prebuilt; nothing to compile.
+
+
+
+https://github.com/user-attachments/assets/27c56b1f-8baa-4267-80ed-986f58063ebc
+
+
+---
+
+---
+
+## What your agent actually receives
+
+Not a JSON blob it has to decode — formatted markdown with the code already in it:
+>>>>>>> ccdb00936900de2b39e01a068b5a03a940882642
 
 ````
 **Exploration: what breaks if I change hashSource**
