@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { ReferenceCandidate, Symbol } from '../semantic-model/types.js';
 import { SymbolRegistry } from '../registry/registry.js';
+import { languageCategory } from '../parse/lang-detect.js';
 
 /**
  * Resolves reference candidates of kind 'import' to their corresponding target symbols.
@@ -18,19 +19,33 @@ export class ImportResolver {
     }
 
     const { filePath, importPath, rawName } = candidate;
-    const isPython = filePath.endsWith('.py');
-    const isJava = filePath.endsWith('.java');
-    const isHtml = filePath.endsWith('.html');
 
     let resolvedSym: Symbol | undefined;
-    if (isPython) {
-      resolvedSym = this.resolvePythonImport(filePath, importPath, rawName, candidate);
-    } else if (isJava) {
-      resolvedSym = this.resolveJavaImport(filePath, importPath, rawName, candidate);
-    } else if (isHtml) {
-      resolvedSym = this.resolveHtmlImport(filePath, importPath, rawName, candidate);
-    } else {
-      resolvedSym = this.resolveTypeScriptImport(filePath, importPath, rawName, candidate);
+    switch (languageCategory(filePath)) {
+      case 'python':
+        resolvedSym = this.resolvePythonImport(filePath, importPath, rawName, candidate);
+        break;
+      // C# `using` names a namespace the same way a Java import names a package: a dotted
+      // path already flattened to slashes by the normalizer.
+      case 'java':
+      case 'csharp':
+        resolvedSym = this.resolveJavaImport(filePath, importPath, rawName, candidate);
+        break;
+      // Go imports a package directory, not a file — its own resolver.
+      case 'go':
+        resolvedSym = this.resolveGoImport(filePath, importPath, rawName, candidate);
+        break;
+      // `#include "repo.h"` and `source("utils.R")` are both plain relative file paths,
+      // which is exactly what the HTML resolver already does.
+      case 'html':
+      case 'cpp':
+        resolvedSym = this.resolveHtmlImport(filePath, importPath, rawName, candidate);
+        break;
+      case 'r':
+        resolvedSym = this.resolveRImport(filePath, importPath, rawName, candidate);
+        break;
+      default:
+        resolvedSym = this.resolveTypeScriptImport(filePath, importPath, rawName, candidate);
     }
 
     if (resolvedSym) {
@@ -229,6 +244,66 @@ export class ImportResolver {
     return undefined;
   }
 
+  /**
+   * Go imports a *package*, which is a directory — `import "myapp/repo"` pulls in every file
+   * under `myapp/repo/`, not a file called `repo`. So the match is on the containing
+   * directory, and the imported name is looked up across all files in it.
+   *
+   * The name resolved is the package name; the symbols inside are reached by the call
+   * resolver through `pkg.Symbol` qualifier chains, not by the import itself.
+   */
+  private resolveGoImport(
+    filePath: string,
+    importPath: string,
+    rawName: string,
+    candidate: ReferenceCandidate
+  ): Symbol | undefined {
+    const cleanImportPath = importPath.replace(/^[\.\/]+/, '').replace(/\/+$/, '');
+    const lookupName = (candidate.metadata?.importedName as string) || rawName;
+
+    // A Go import path is module-qualified — `gofixture/service` for a package that lives in
+    // `service/` on disk, because `gofixture` is the module name from go.mod, not a
+    // directory. Since go.mod isn't parsed, try the path with leading segments progressively
+    // dropped and take the most specific directory that matches.
+    const segments = cleanImportPath.split('/').filter(Boolean);
+    const candidateDirs: string[] = [];
+    for (let i = 0; i < segments.length; i++) {
+      candidateDirs.push(segments.slice(i).join('/'));
+    }
+
+    const allSymbols = this.registry.byId.values();
+    let packageFiles: Symbol[] = [];
+    for (const dirCandidate of candidateDirs) {
+      packageFiles = allSymbols.filter(s => {
+        if (s.kind !== 'file') return false;
+        const dir = path.dirname(s.filePath.replace(/\\/g, '/'));
+        return dir === dirCandidate || dir.endsWith('/' + dirCandidate);
+      });
+      if (packageFiles.length > 0) break;
+    }
+
+    for (const fileSymbol of packageFiles) {
+      const fileSymbols = this.registry.byFile.lookup(fileSymbol.filePath);
+      const match = fileSymbols.find(
+        s => s.kind !== 'file' && s.exported && (s.name === lookupName || s.qualifiedName === lookupName)
+      );
+      if (match) return match;
+    }
+
+    // The package resolved but nothing inside it matched by name: point at one of its files
+    // so the import edge still lands somewhere real.
+    if (packageFiles.length > 0) return packageFiles[0];
+
+    const globalMatches = this.registry.byName.lookup(lookupName);
+    const category = this.getLanguageCategory(filePath);
+    const exportedMatch = globalMatches.find(s =>
+      s.kind !== 'file' && s.exported && this.getLanguageCategory(s.filePath) === category
+    );
+    if (exportedMatch) return exportedMatch;
+
+    return undefined;
+  }
+
   private resolveJavaImport(
     filePath: string,
     importPath: string,
@@ -243,8 +318,9 @@ export class ImportResolver {
     let targetFileSymbol: Symbol | undefined;
 
     if (!isWildcard) {
+      // Extension-agnostic: this resolver serves C# (`.cs`) as well as Java.
       targetFileSymbol = allSymbols.find(
-        s => s.kind === 'file' && s.filePath.replace(/\.java$/, '').endsWith(lookupPath)
+        s => s.kind === 'file' && s.filePath.replace(/\.[A-Za-z0-9]+$/, '').endsWith(lookupPath)
       );
     }
 
@@ -267,6 +343,35 @@ export class ImportResolver {
     if (exportedMatch) return exportedMatch;
 
     return undefined;
+  }
+
+  /**
+   * R's `source("R/utils.R")` is resolved against the working directory — in practice the
+   * project root — not against the file doing the sourcing. Joining it to the caller's
+   * directory the way every other language expects turns `R/utils.R` into `R/R/utils.R`, so
+   * the root-relative reading is tried first and the file-relative one only as a fallback.
+   *
+   * `library(dplyr)` has no path at all and simply falls through to the external-package
+   * handling in resolveImport.
+   */
+  private resolveRImport(
+    filePath: string,
+    importPath: string,
+    rawName: string,
+    candidate: ReferenceCandidate
+  ): Symbol | undefined {
+    const normalized = importPath.replace(/\\/g, '/').replace(/^\.\//, '');
+
+    const direct = this.registry.byModule.lookup(normalized);
+    if (direct) return direct;
+
+    const allSymbols = this.registry.byId.values();
+    const bySuffix = allSymbols.find(
+      s => s.kind === 'file' && s.filePath.replace(/\\/g, '/').endsWith(normalized)
+    );
+    if (bySuffix) return bySuffix;
+
+    return this.resolveHtmlImport(filePath, importPath, rawName, candidate);
   }
 
   private resolveHtmlImport(
@@ -314,11 +419,6 @@ export class ImportResolver {
   }
 
   private getLanguageCategory(filePath: string): string {
-    const ext = path.extname(filePath).toLowerCase();
-    if (ext === '.py') return 'python';
-    if (ext === '.java') return 'java';
-    if (ext === '.html') return 'html';
-    if (['.ts', '.tsx', '.js', '.jsx'].includes(ext)) return 'typescript';
-    return 'unknown';
+    return languageCategory(filePath);
   }
 }

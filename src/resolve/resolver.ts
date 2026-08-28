@@ -54,6 +54,13 @@ export function resolveAll(
         fileMap = new Map<string, Symbol>();
         fileResolvedImports.set(cand.filePath, fileMap);
       }
+      // Bind the import under the name call sites actually use. For TS/Java/Python that is
+      // `rawName` and nothing more is needed, but Go, C++ and R import a *path*
+      // (`"gofixture/service"`, `"user_repo.h"`) while the code refers to the package by its
+      // final segment — so the resolved local name is registered as well. rawName is set
+      // last so an explicit name always wins a collision.
+      const importedName = cand.metadata?.importedName as string | undefined;
+      if (importedName) fileMap.set(importedName, resolvedSym);
       fileMap.set(cand.rawName, resolvedSym);
     } else {
       unresolved.push(cand);

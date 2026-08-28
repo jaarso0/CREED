@@ -1,10 +1,13 @@
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import { Pipeline } from './pipeline.js';
 import { SqliteSemanticModelStorage } from './storage/sqlite/sqlite-model-storage.js';
 import { SqlitePartialCache } from './storage/sqlite/partial-cache.js';
 import { INDEX_DIR } from './storage/sqlite/db.js';
+
+export const PACKAGE_NAME = 'creed-kg';
 
 /**
  * The server entry written into every MCP config.
@@ -12,13 +15,50 @@ import { INDEX_DIR } from './storage/sqlite/db.js';
  * No project path: `creed-kg mcp` resolves the project by walking up from wherever the
  * editor launches it. That's what makes one identical block work in every repository —
  * and lets a user drop it in a global config once instead of per project.
+ *
+ * Deliberately NOT `npx -y creed-kg mcp`, which is what this used to write. MCP clients
+ * apply a startup deadline to the server they spawn, and npx defers a ~77 MB install (the
+ * tree-sitter grammars and better-sqlite3, each shipping prebuilt binaries for every
+ * platform) to that exact moment. On a slow connection the client kills the process
+ * mid-download — and because npx only finalizes its cache entry after a *successful* run,
+ * the next launch re-downloads from scratch and dies the same way, forever. The install has
+ * to happen in the foreground, once, from `init`; see `ensureGlobalInstall`.
  */
 const SERVER_ENTRY = {
-  command: 'npx',
-  args: ['-y', 'creed-kg', 'mcp']
+  command: PACKAGE_NAME,
+  args: ['mcp']
 };
 
 const SERVER_NAME = 'creed';
+
+/** True when `creed-kg` resolves on PATH and runs. */
+function commandResolves(): boolean {
+  // shell: true so Windows finds the `.cmd` shim npm writes for global bins.
+  const probe = spawnSync(SERVER_ENTRY.command, ['--version'], { stdio: 'ignore', shell: true });
+  return probe.status === 0;
+}
+
+/**
+ * Makes sure the command written into every config will actually resolve when an editor
+ * spawns it — installing it globally if it doesn't.
+ *
+ * This is the entire reason `init` is worth running: it is the one moment Creed is running
+ * in a terminal, in the foreground, with visible progress and no deadline attached. Paying
+ * the install cost anywhere else means paying it inside an MCP client's startup window,
+ * which is the failure this replaced.
+ */
+export function ensureGlobalInstall(): 'present' | 'installed' | 'failed' {
+  if (commandResolves()) return 'present';
+
+  console.log(`Installing ${PACKAGE_NAME} globally — one time, and the only slow step.\n`);
+  const install = spawnSync('npm', ['install', '-g', PACKAGE_NAME], {
+    stdio: 'inherit',
+    shell: true
+  });
+
+  if (install.status === 0 && commandResolves()) return 'installed';
+  return 'failed';
+}
 
 interface EditorTarget {
   id: string;
@@ -81,11 +121,11 @@ const EDITOR_TARGETS: EditorTarget[] = [
  * config into someone's editor is worse than writing none.
  */
 const MANUAL_TARGETS = [
-  ['Claude Desktop', 'run `npx creed-kg setup` — it writes the config for you'],
+  ['Claude Desktop', 'run `creed-kg setup` — it writes the config for you'],
   ['Windsurf', '~/.codeium/windsurf/mcp_config.json'],
   ['Codex CLI', '~/.codex/config.toml — TOML, add an [mcp_servers.creed] section'],
   ['OpenCode', 'opencode.json — uses its own `mcp` schema'],
-  ['Antigravity', 'add it from the editor’s MCP settings panel']
+  ['Antigravity', '~/.gemini/config/mcp_config.json (or the editor’s MCP settings panel)']
 ];
 
 export interface InitOptions {
@@ -245,8 +285,15 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     console.log(`  · ${label.padEnd(16)} ${where}`);
   }
 
+  // Printed verbatim because hand-written configs are where this goes wrong: reaching for
+  // `npx creed-kg mcp` looks equivalent and installs 77 MB inside the client's startup
+  // deadline, which fails and keeps failing. Give people the block to paste instead.
+  console.log('\n  Paste this into the "mcpServers" object (VS Code calls it "servers"):\n');
+  const block = JSON.stringify({ [SERVER_NAME]: SERVER_ENTRY }, null, 2);
+  for (const line of block.split('\n')) console.log(`    ${line}`);
+
   console.log(`\nRestart your editor, then ask it: "what MCP tools do you have?"`);
-  console.log(`Or try it right now:  npx creed-kg query "how does this project work"\n`);
+  console.log(`Or try it right now:  creed-kg query "how does this project work"\n`);
 
   return result;
 }

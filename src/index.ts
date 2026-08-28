@@ -90,11 +90,20 @@ async function runSetup() {
 
     // The published package is `creed-kg` — `creed` is an unrelated 2018 async library, so
     // naming it here would have had npx install and run entirely the wrong thing.
+    //
+    // Launched by its global bin rather than through npx: Claude Desktop, like every MCP
+    // client, gives a server a bounded window to complete the handshake, and an npx cold
+    // start spends that window downloading 77 MB. See `ensureGlobalInstall` in init.ts.
+    const { ensureGlobalInstall, PACKAGE_NAME } = await import('./init.js');
+    if (ensureGlobalInstall() === 'failed') {
+      console.error(`\n❌ Could not install ${PACKAGE_NAME} globally.`);
+      console.error(`   Run \`npm install -g ${PACKAGE_NAME}\` yourself, then re-run setup.`);
+      return;
+    }
+
     config.mcpServers['creed'] = {
-      command: 'npx',
+      command: PACKAGE_NAME,
       args: [
-        '-y',
-        'creed-kg',
         'mcp',
         targetDir
       ]
@@ -230,13 +239,23 @@ async function runCLI() {
     }
 
     try {
-      const { runInit } = await import('./init.js');
+      const { runInit, ensureGlobalInstall, PACKAGE_NAME } = await import('./init.js');
+
+      // Before anything is written, guarantee the command those configs name will resolve.
+      // Doing it here — foreground, no client deadline — is the point of `init`.
+      const installState = ensureGlobalInstall();
+
       await runInit({
         projectRoot: targetDir,
         all: rest.includes('--all'),
         editors,
         skipIndex: rest.includes('--no-index')
       });
+
+      if (installState === 'failed') {
+        console.error(`⚠  ${PACKAGE_NAME} is not on your PATH, so the configs just written`);
+        console.error(`   will not start. Run: npm install -g ${PACKAGE_NAME}\n`);
+      }
     } catch (err: any) {
       console.error(`\n❌ init failed:`, err.message || err);
       process.exit(1);
@@ -318,59 +337,73 @@ async function runCLI() {
   if (command === 'mcp') {
     const targetDir = args[1] ? path.resolve(args[1]) : findProjectRoot();
     try {
-      const storage = new SqliteSemanticModelStorage();
-      const pipeline = new Pipeline();
-      // The graph is always rebuilt on startup — a previously cached *model* was never
-      // trusted, because a restarted server could inherit a stale index that another
-      // (older-code) instance had clobbered onto disk.
-      //
-      // The partial cache does not weaken that guarantee: every file is still read and
-      // hashed on every startup, and merge/registry/resolution still run over the full
-      // set. Only parse+extract is skipped, and only for files whose content hash and
-      // pipeline version both match. So the served graph still reflects the current
-      // source exactly — it just gets there without re-parsing what has not changed.
-      console.error(`Building semantic model for ${targetDir} on startup...`);
-      const cache = new SqlitePartialCache(targetDir);
-      let build;
-      try {
-        build = await pipeline.build(targetDir, { cache });
-      } finally {
-        // Closed before save() opens its write connection.
-        cache.close();
-      }
-      const { model, fileRecords, stats } = build;
-      await storage.save(model, targetDir, fileRecords);
-      console.error(
-        `Model ready: ${model.fileCount} files, ${model.symbolCount} symbols ` +
-        `(${stats.parsed} parsed, ${stats.reused} reused from cache).`
-      );
+      // Indexing is started but NOT awaited. An MCP client gives the server it spawned a
+      // bounded window to answer `initialize`, and awaiting the build here put the size of
+      // the user's repository inside that window — a large project was reported as a dead
+      // server rather than a slow one. `initialize` and `tools/list` need no graph, so the
+      // handshake completes immediately and only `tools/call` waits on this promise.
+      const ready = (async () => {
+        const storage = new SqliteSemanticModelStorage();
+        const pipeline = new Pipeline();
+        // The graph is always rebuilt on startup — a previously cached *model* was never
+        // trusted, because a restarted server could inherit a stale index that another
+        // (older-code) instance had clobbered onto disk.
+        //
+        // The partial cache does not weaken that guarantee: every file is still read and
+        // hashed on every startup, and merge/registry/resolution still run over the full
+        // set. Only parse+extract is skipped, and only for files whose content hash and
+        // pipeline version both match. So the served graph still reflects the current
+        // source exactly — it just gets there without re-parsing what has not changed.
+        console.error(`Building semantic model for ${targetDir}...`);
+        const cache = new SqlitePartialCache(targetDir);
+        let build;
+        try {
+          build = await pipeline.build(targetDir, { cache });
+        } finally {
+          // Closed before save() opens its write connection.
+          cache.close();
+        }
+        const { model, fileRecords, stats } = build;
+        await storage.save(model, targetDir, fileRecords);
+        console.error(
+          `Model ready: ${model.fileCount} files, ${model.symbolCount} symbols ` +
+          `(${stats.parsed} parsed, ${stats.reused} reused from cache).`
+        );
 
-      // Serve the graph out of SQLite rather than the in-memory model. The model
-      // object built above is released once this scope exits; from here on, node and
-      // edge lookups are indexed reads against .creed/graph.db, so resident memory
-      // tracks what queries touch instead of the size of the repository.
-      const { SqliteKnowledgeGraph } = await import('./graph/sqlite-graph.js');
-      const { SqliteSymbolIndex } = await import('./retrieval/sqlite-symbol-index.js');
-      const graph = new SqliteKnowledgeGraph(targetDir);
-      const index = new SqliteSymbolIndex(targetDir);
+        // Serve the graph out of SQLite rather than the in-memory model. The model
+        // object built above is released once this scope exits; from here on, node and
+        // edge lookups are indexed reads against .creed/graph.db, so resident memory
+        // tracks what queries touch instead of the size of the repository.
+        const { SqliteKnowledgeGraph } = await import('./graph/sqlite-graph.js');
+        const { SqliteSymbolIndex } = await import('./retrieval/sqlite-symbol-index.js');
+        return {
+          graph: new SqliteKnowledgeGraph(targetDir),
+          index: new SqliteSymbolIndex(targetDir)
+        };
+      })();
 
       const { MCPServer } = await import('./mcp/server.js');
-      const mcpServer = new MCPServer(graph, targetDir, index);
+      const mcpServer = new MCPServer(targetDir, ready);
       mcpServer.start();
 
-      const { watchAndRebuild } = await import('./watcher.js');
-      const watcher = watchAndRebuild(targetDir, () => {
-        // The rebuild has already written the new index to the same database file.
-        // Re-point the existing readers at it instead of constructing a new graph.
-        graph.refresh();
-        index.refresh();
-        mcpServer.updateGraph(graph, index);
-      });
-      process.on('exit', () => {
-        watcher.close();
-        graph.close();
-        index.close();
-      });
+      // The watcher is attached only once the first build has produced readers to refresh.
+      // Rejection is already reported by MCPServer, which surfaces it on every tool call;
+      // catching here as well keeps a failed build from becoming an unhandled rejection.
+      ready.then(async ({ graph, index }) => {
+        const { watchAndRebuild } = await import('./watcher.js');
+        const watcher = watchAndRebuild(targetDir, () => {
+          // The rebuild has already written the new index to the same database file.
+          // Re-point the existing readers at it instead of constructing a new graph.
+          graph.refresh();
+          index.refresh();
+          mcpServer.updateGraph(graph, index);
+        });
+        process.on('exit', () => {
+          watcher.close();
+          graph.close();
+          index.close();
+        });
+      }).catch(() => {});
     } catch (err: any) {
       console.error(`\n❌ Error starting MCP server:`, err.message || err);
       process.exit(1);

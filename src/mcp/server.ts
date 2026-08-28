@@ -12,17 +12,50 @@ import {
 import { RequestController } from './controller.js';
 import { SymbolIndex } from '../retrieval/symbol-index.js';
 
-export class MCPServer {
-  private graph: ReadableGraph;
-  private projectRoot: string;
-  private controller: RequestController;
-  private index: SymbolIndex | undefined;
+/** The graph and its symbol index, once indexing has finished. */
+export interface GraphBundle {
+  graph: ReadableGraph;
+  index?: SymbolIndex;
+}
 
-  constructor(graph: ReadableGraph, projectRoot: string, index?: SymbolIndex) {
-    this.graph = graph;
+export class MCPServer {
+  private graph: ReadableGraph | undefined;
+  private projectRoot: string;
+  private controller: RequestController | undefined;
+  private index: SymbolIndex | undefined;
+  /** Resolves when the first index build lands; rejects if it failed outright. */
+  private ready: Promise<void>;
+  private readyError: string | null = null;
+
+  /**
+   * Takes the graph as a *promise* rather than a value, so `start()` can attach to stdio and
+   * complete the MCP handshake while indexing is still running.
+   *
+   * Blocking the handshake on the build was the original shape, and it put the size of the
+   * user's repository inside the client's startup deadline: a large project times out before
+   * `initialize` is ever answered, and the client reports a dead server rather than a slow
+   * one. `initialize` and `tools/list` are static facts about this server and need no graph;
+   * only `tools/call` genuinely has to wait, and it waits here rather than in the client.
+   */
+  constructor(projectRoot: string, ready: Promise<GraphBundle>) {
     this.projectRoot = projectRoot;
-    this.index = index;
-    this.controller = new RequestController(graph, projectRoot, index);
+    this.ready = ready.then(
+      (bundle) => {
+        this.applyBundle(bundle);
+      },
+      (err: any) => {
+        // Held as a message rather than rethrown per call site: an unhandled rejection here
+        // would take down a server that is otherwise perfectly able to report the problem.
+        this.readyError = err?.message || String(err);
+        console.error('Index build failed — tools will report this:', this.readyError);
+      }
+    );
+  }
+
+  private applyBundle(bundle: GraphBundle): void {
+    this.graph = bundle.graph;
+    if (bundle.index) this.index = bundle.index;
+    this.controller = new RequestController(bundle.graph, this.projectRoot, this.index);
   }
 
   /**
@@ -32,9 +65,10 @@ export class MCPServer {
    * derived from the graph itself.
    */
   public updateGraph(graph: ReadableGraph, index?: SymbolIndex): void {
-    this.graph = graph;
-    if (index) this.index = index;
-    this.controller = new RequestController(graph, this.projectRoot, this.index);
+    this.applyBundle({ graph, index });
+    // A successful rebuild clears a failed initial build: the graph on disk is now good,
+    // so continuing to report the old error would be wrong.
+    this.readyError = null;
   }
 
   public start(): void {
@@ -119,6 +153,24 @@ export class MCPServer {
 
   private async handleToolCall(id: any, toolName: string, args: any): Promise<void> {
     try {
+      // The handshake deliberately does not wait for indexing; this is the one place that
+      // must. Held here rather than in the client, which would call it a startup failure.
+      await this.ready;
+
+      // Captured once: the watcher can swap in a rebuilt graph at any await point, and a
+      // request should finish against the graph it started on rather than a half-swapped pair.
+      const controller = this.controller;
+      const graph = this.graph;
+      if (!controller || !graph) {
+        this.sendToolError(
+          id,
+          this.readyError
+            ? `Index build failed: ${this.readyError}`
+            : 'Index is not ready yet.'
+        );
+        return;
+      }
+
       let plan: GraphQueryPlan;
 
       switch (toolName) {
@@ -199,13 +251,13 @@ export class MCPServer {
       console.error(`Executing tool ${toolName} with compiled plan:`, JSON.stringify(plan));
 
       // Execute the query plan through the request controller
-      const result = await this.controller.processPlan(plan);
+      const result = await controller.processPlan(plan);
 
       // Stamp the in-memory graph's build time onto every response, so a stale server
       // (serving a graph built before the latest reindex) is obvious at a glance rather
       // than requiring a forensic comparison against the on-disk model.
       if (result && typeof result === 'object') {
-        result.graphBuiltAt = this.graph.getBuiltAt() ?? 'unknown';
+        result.graphBuiltAt = graph.getBuiltAt() ?? 'unknown';
       }
 
       this.sendResult(id, {

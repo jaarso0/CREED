@@ -19,7 +19,7 @@ export const SCHEMA_VERSION = 4;
  * A schema bump also invalidates the cache, so this only needs bumping for changes
  * that leave the schema alone.
  */
-export const PIPELINE_VERSION = 2;
+export const PIPELINE_VERSION = 3;
 
 /**
  * Substring matching (CandidateDiscovery's "name contains token") has no usable

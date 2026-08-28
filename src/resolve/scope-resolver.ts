@@ -2,6 +2,7 @@ import * as path from 'path';
 import { ReferenceCandidate, Symbol, Scope, Containment } from '../semantic-model/types.js';
 import { SymbolRegistry } from '../registry/registry.js';
 import { isRangeContained } from '../registry/registry.js';
+import { languageCategory } from '../parse/lang-detect.js';
 
 export class ScopeResolver {
   private registry: SymbolRegistry;
@@ -223,6 +224,20 @@ export class ScopeResolver {
       }
     }
 
+    // A file symbol owns no containment edges for its top-level declarations, so walking
+    // edges finds nothing — look the name up among the file's symbols instead.
+    //
+    // This is the path Go, C++ and R depend on. Those languages import a whole package or
+    // header and then reach into it by qualifier (`service.NewUserService`, `stats::median`),
+    // where the import resolves to a *file* and the member has to be found inside it. TS and
+    // Python never needed it: they name the symbol in the import itself, so the import
+    // already resolves straight to the class or function.
+    if (parentSymbol.kind === 'file') {
+      const fileSymbols = this.registry.byFile.lookup(parentSymbol.filePath);
+      const match = fileSymbols.find(s => s.kind !== 'file' && s.name === memberName);
+      if (match) return match;
+    }
+
     // Instance member access: `parentSymbol` is a variable (e.g. `const registry = new Foo()`),
     // so its own containments are empty — the member actually lives on its declared type's class.
     // Hop to the class symbol and retry the member lookup there.
@@ -394,11 +409,6 @@ export class ScopeResolver {
   }
 
   private getLanguageCategory(filePath: string): string {
-    const ext = path.extname(filePath).toLowerCase();
-    if (ext === '.py') return 'python';
-    if (ext === '.java') return 'java';
-    if (ext === '.html') return 'html';
-    if (['.ts', '.tsx', '.js', '.jsx'].includes(ext)) return 'typescript';
-    return 'unknown';
+    return languageCategory(filePath);
   }
 }

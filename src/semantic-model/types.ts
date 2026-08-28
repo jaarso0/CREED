@@ -25,6 +25,7 @@ export type SymbolKind =
   | 'class'
   | 'interface'
   | 'struct'
+  | 'enum'
   | 'function'
   | 'method'
   | 'variable'

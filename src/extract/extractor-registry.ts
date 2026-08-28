@@ -21,6 +21,10 @@ export class ExtractorRegistry {
     this.extractors.set('python', queryExtractor);
     this.extractors.set('java', queryExtractor);
     this.extractors.set('html', queryExtractor);
+    this.extractors.set('go', queryExtractor);
+    this.extractors.set('csharp', queryExtractor);
+    this.extractors.set('cpp', queryExtractor);
+    this.extractors.set('r', queryExtractor);
   }
 
   public getExtractor(lang: Language): QueryExtractor {

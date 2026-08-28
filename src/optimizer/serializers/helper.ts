@@ -14,6 +14,9 @@ export function fenceLanguage(filePath: string): string {
   if (!lang) return '';
   if (lang === 'tsx') return 'typescript';
   if (lang === 'jsx') return 'javascript';
+  // Internal language ids that differ from the tag markdown highlighters expect.
+  if (lang === 'csharp') return ext === '.cs' ? 'csharp' : lang;
+  if (lang === 'cpp') return (ext === '.c' || ext === '.h') ? 'c' : 'cpp';
   return lang;
 }
 

@@ -38,7 +38,7 @@ describe('creed init', () => {
     const config = read('.cursor/mcp.json');
     // Losing an unrelated server would break whatever the user had working.
     expect(config.mcpServers.other).toEqual({ command: 'node', args: ['x.js'] });
-    expect(config.mcpServers.creed.command).toBe('npx');
+    expect(config.mcpServers.creed.command).toBe('creed-kg');
   });
 
   test('keeps unrelated top-level settings in a shared config file', async () => {
@@ -73,8 +73,25 @@ describe('creed init', () => {
   test('writes no project path, so the same block works in any repo', async () => {
     await init({ all: true });
     const args = read('.mcp.json').mcpServers.creed.args;
-    expect(args).toEqual(['-y', 'creed-kg', 'mcp']);
+    expect(args).toEqual(['mcp']);
     expect(args.some((a: string) => a.includes(root))).toBe(false);
+  });
+
+  test('never launches through npx', async () => {
+    // npx defers a ~77 MB install to the moment the editor spawns the server, inside the
+    // client's startup deadline. It gets killed mid-download, and because npx only caches
+    // after a successful run, every later launch re-downloads and fails identically. The
+    // install belongs in `init`, in the foreground — so no config may name npx.
+    await init({ all: true });
+
+    for (const file of ['.mcp.json', '.cursor/mcp.json', '.vscode/mcp.json',
+                        '.kiro/settings/mcp.json', '.gemini/settings.json']) {
+      const config = read(file);
+      const entry = (config.mcpServers ?? config.servers).creed;
+      expect(entry.command, file).toBe('creed-kg');
+      expect(entry.args, file).not.toContain('-y');
+      expect(JSON.stringify(entry), file).not.toContain('npx');
+    }
   });
 
   test('only touches editors that are actually used here', async () => {
