@@ -76,17 +76,10 @@ npx creed-kg query "src/auth login token refresh"
 
 `query` builds an index first if there isn't one, so it works with or without `init`.
 
-**In a browser.** `npx creed-kg serve .` opens an interactive graph explorer — flat, module, service, API and data views, a details inspector, and execution-flow tracing. Ships prebuilt.
-
-https://github.com/user-attachments/assets/27c56b1f-8baa-4267-80ed-986f58063ebc
-
 ---
 
-## What comes back
+## See it, too
 
-<<<<<<< HEAD
-Formatted markdown with the code already in it, not a JSON blob:
-=======
 ```bash
 npx creed-kg serve .
 ```
@@ -94,19 +87,11 @@ npx creed-kg serve .
 Opens an interactive 2D graph explorer in your browser — flat, module, service, API and data
 views, a details inspector, and execution-flow tracing. Ships prebuilt; nothing to compile.
 
-
-
 https://github.com/user-attachments/assets/27c56b1f-8baa-4267-80ed-986f58063ebc
-
-
----
 
 ---
 
 ## What your agent actually receives
-
-Not a JSON blob it has to decode — formatted markdown with the code already in it:
->>>>>>> ccdb00936900de2b39e01a068b5a03a940882642
 
 ````
 **Exploration: what breaks if I change hashSource**
@@ -193,31 +178,11 @@ Questions get the same treatment: if most of what you asked matched nothing, or 
 ### Tokens
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/chart-light.svg">
-  <img alt="Bar chart comparing token costs of explore vs grep-and-read across ten queries. Explore is consistently lower." src="assets/chart-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/chart-dark.svg">
+  <img alt="Bar chart comparing token costs of explore vs grep-and-read across ten questions on this repo. Explore stays between 4,899 and 9,350 tokens; grep-and-read ranges from 5,095 to 164,931." src="assets/chart-light.svg" width="100%">
 </picture>
 
-Across ten questions on this repo:
-
-| | Total tokens | vs `explore` |
-| :--- | ---: | ---: |
-| `explore` | **75,965** | — |
-| grep + read every match | 523,569 | 6.9× |
-| grep + read top 5 files | 211,716 | 2.8× |
-
-The multiplier isn't the interesting part. The spread is:
-
-| | cheapest | dearest | spread |
-| :--- | ---: | ---: | ---: |
-| `explore` | 4,899 | 9,350 | **1.9×** |
-| grep + read | 5,095 | 164,931 | **32.4×** |
-
-Creed ranks results down to a token budget, so cost barely moves with how broad your question is. grep's cost tracks how common your word happens to be: `symbol` matches 1,259 lines across 63 files here, and reading them is 164,931 tokens — more than most context windows hold, for one question.
-
-**Where it doesn't help.** `who calls allocateBudget` came out at 4,899 vs 5,095 — noise. When a symbol is rare and lives in small files, grep was already cheap. The savings come from breadth.
-
-<details>
-<summary><b>Per-question numbers and methodology</b></summary>
+Ten questions, run against this repo:
 
 | Question | `explore` | grep + read every match | grep + read top 5 |
 | :--- | ---: | ---: | ---: |
@@ -231,11 +196,29 @@ Creed ranks results down to a token budget, so cost barely moves with how broad 
 | how does the extraction pipeline work | 9,350 | 42,071 | 10,729 |
 | how is the graph built | 7,534 | 124,187 | 40,057 |
 | how are symbols stored | 8,950 | 164,931 | 51,305 |
-| **Total** | **75,965** | **523,569** | **211,716** |
+| **Total** | **75,965** | **523,569** — 6.9× | **211,716** — 2.8× |
+
+The multiplier isn't the interesting part. The spread is:
+
+| | cheapest | dearest | spread |
+| :--- | ---: | ---: | ---: |
+| `explore` | 4,899 | 9,350 | **1.9×** |
+| grep + read | 5,095 | 164,931 | **32.4×** |
+
+Creed ranks results down to a token budget, so cost barely moves with how broad your question is. grep's cost tracks how common your word happens to be: `symbol` matches 1,259 lines across 63 files here, and reading them is 164,931 tokens — more than most context windows hold, for one question.
+
+**Where it doesn't help.** `who calls allocateBudget` came out at 4,899 vs 5,095 — noise. When a symbol is rare and lives in small files, grep was already cheap. The savings come from breadth.
+
+<details>
+<summary><b>Methodology</b></summary>
+
+Counted with a real BPE tokenizer, not a chars/4 estimate — code tokenizes at roughly 3–3.5 chars per token.
 
 The baseline is deliberately generous: **one** grep, with a pattern that already contains the right symbol name — as if the agent guessed perfectly — then reads what it matched. Real agents grep two or three times with imperfect patterns, read irrelevant files, and re-grep for callers. None of that is counted.
 
 Two columns because agents differ. Reading every match is the only one that actually covers what Creed's answer covers; reading the top five accepts that it might miss the caller that mattered.
+
+This measures cost, not correctness — it does not claim the two strategies return equally good answers.
 
 Reproduce it:
 
@@ -277,6 +260,8 @@ Cheap enough to just always be current, which is why staleness never becomes you
 Creed also recognises what your code means, not just its shape. Adapters detect **FastAPI, Flask, NestJS and Express** routes, ORM data models and service classes, and attach them to the graph — so `explore "POST /login"` resolves to the handler.
 
 Cross-file resolution follows imports, class inheritance, instance-method calls through local variables, and `this.field.method()` chains — through the field's declared type, interface members, imported types, and standard-library and dependency types, which become explicit nodes marking where your code meets its dependencies.
+
+Tree-sitter rather than each language's own type checker, because it gives one pipeline across every language above, needs no build or typecheck step, works on code that doesn't currently compile, and is what makes a 0.15s incremental rebuild possible. The trade is precision: where a reference can't be resolved structurally, Creed falls back to a name match and labels it as one.
 
 ---
 
@@ -330,6 +315,4 @@ npm install
 npm test
 ```
 
-[**Architecture**](architecture.md) · [**Deep dive**](deep_dive_architecture.md) · [**Coverage notes**](limitations.md)
-
-MIT licensed.
+[**Architecture**](architecture.md) · MIT licensed.
